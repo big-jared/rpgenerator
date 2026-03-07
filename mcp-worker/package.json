@@ -1,0 +1,20 @@
+{
+  "name": "rpgenerator-mcp-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP OAuth proxy for RPGenerator on Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir=dist"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.2.0",
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.13.2"
+  }
+}

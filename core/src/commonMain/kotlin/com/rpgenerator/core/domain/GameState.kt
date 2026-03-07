@@ -8,7 +8,13 @@ import kotlinx.serialization.Serializable
 internal data class GameState(
     val gameId: String,
     val systemType: SystemType,
-    val worldSettings: WorldSettings, // World lore and narrative structure
+    val worldSettings: WorldSettings = WorldSettings(
+        worldName = "Default World",
+        coreConcept = "A world of adventure",
+        originStory = "The world has always been",
+        currentState = "Stable but dangerous"
+    ), // World lore and narrative structure
+    val seedId: String? = null, // WorldSeed ID - defines world flavor and narrator style
     val characterSheet: CharacterSheet,
     val currentLocation: Location,
     val playerName: String = "Adventurer",

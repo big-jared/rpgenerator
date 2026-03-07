@@ -18,6 +18,7 @@ import com.rpgenerator.core.domain.QuestType
 import com.rpgenerator.core.domain.QuestObjective
 import com.rpgenerator.core.domain.QuestRewards
 import com.rpgenerator.core.domain.PlayerClass
+import com.rpgenerator.core.domain.Biome
 import com.rpgenerator.core.rules.RulesEngine
 import com.rpgenerator.core.skill.ActionContext
 import com.rpgenerator.core.skill.SkillAcquisitionService
@@ -29,6 +30,7 @@ import com.rpgenerator.core.story.NPCManager
 import com.rpgenerator.core.story.StoryFoundation
 import com.rpgenerator.core.story.StoryPlanningService
 import com.rpgenerator.core.story.NarratorContext
+import com.rpgenerator.core.story.WorldSeeds
 import com.rpgenerator.core.generation.NPCArchetypeGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,20 +41,17 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 
-/**
- * Path complexity level for routing decisions
- */
-internal enum class PathComplexity {
-    SIMPLE,     // Fast path - direct routing to handlers
-    COMPLEX     // Coordinated path - Game Master coordinates agents
-}
 
 internal class GameOrchestrator(
     private val llm: LLMInterface,
     private var gameState: GameState
 ) {
+    // Load the WorldSeed for narrator customization
+    private val worldSeed = gameState.seedId?.let { WorldSeeds.byId(it) }
+
     // Lazy agent initialization - agents are only created when first used
-    private val narratorAgent by lazy { NarratorAgent(llm) }
+    // Use the seed's narratorPrompt if available
+    private val narratorAgent by lazy { NarratorAgent(llm, worldSeed?.narratorPrompt) }
     private val npcAgent by lazy { NPCAgent(llm) }
     private val locationGeneratorAgent by lazy { LocationGeneratorAgent(llm) }
     private val questGeneratorAgent by lazy { QuestGeneratorAgent(llm) }
@@ -65,7 +64,7 @@ internal class GameOrchestrator(
         loadLocations(gameState.systemType)
     }
     private val rulesEngine = RulesEngine()
-    private val tools by lazy { GameToolsImpl(locationManager, rulesEngine, locationGeneratorAgent, questGeneratorAgent) }
+    private val tools by lazy { GameToolsImpl(locationManager, rulesEngine, locationGeneratorAgent, questGeneratorAgent, llm) }
     private val skillAcquisitionService = SkillAcquisitionService()
     private val skillCombatService = SkillCombatService()
 
@@ -96,6 +95,9 @@ internal class GameOrchestrator(
             eventLog.add(GameEvent.NarratorText(openingNarration))
             gameState = gameState.copy(hasOpeningNarrationPlayed = true)
 
+            // Extract and register any NPCs mentioned in the opening narration
+            registerNPCsFromNarration(openingNarration)
+
             // Now emit quest/NPC events after the opening narration
             emitInitialQuestEvents(this)
 
@@ -118,88 +120,59 @@ internal class GameOrchestrator(
         // Use simple event log instead of complex EventStore
         val recentEvents = eventLog.takeLast(5)
 
-        // Determine if we should use fast path or coordinated path
-        val complexity = analyzeComplexity(input, gameState, recentEvents)
+        // Analyze intent to determine routing
+        val intentAnalysis = tools.analyzeIntent(input, gameState, recentEvents)
 
-        when (complexity) {
-            PathComplexity.SIMPLE -> {
-                // Fast path - direct routing to specific handlers
-                handleSimplePath(input, recentEvents, this)
+        // Menu/system intents short-circuit (no narration needed)
+        when (intentAnalysis.intent) {
+            Intent.SYSTEM_QUERY -> {
+                val status = tools.getPlayerStatus(gameState)
+                val statusText = "Level ${status.level}, XP: ${status.xp}/${status.xpToNextLevel}"
+                val statusEvent = GameEvent.SystemNotification(statusText)
+                emit(statusEvent)
+                eventLog.add(statusEvent)
+                return@flow
             }
-            PathComplexity.COMPLEX -> {
-                // Coordinated path - Game Master coordinates multiple agents
+            Intent.SKILL_MENU -> {
+                handleSkillMenu(this)
+                return@flow
+            }
+            Intent.SKILL_EVOLUTION -> {
+                handleSkillEvolution(intentAnalysis.target, this)
+                return@flow
+            }
+            Intent.SKILL_FUSION -> {
+                handleSkillFusion(this, input)
+                return@flow
+            }
+            Intent.STATUS_MENU -> {
+                handleStatusMenu(this)
+                return@flow
+            }
+            Intent.INVENTORY_MENU -> {
+                handleInventoryMenu(this)
+                return@flow
+            }
+            Intent.QUEST_ACTION -> {
+                handleQuestActionMenu(input, this)
+                return@flow
+            }
+            Intent.CLASS_SELECTION -> {
+                handleClassSelection(intentAnalysis.target, input, this)
+                return@flow
+            }
+            Intent.USE_SKILL -> {
+                handleUseSkill(intentAnalysis.target, this, input)
+                return@flow
+            }
+            else -> {
+                // Narrative intents (COMBAT, EXPLORATION, NPC_DIALOGUE, MOVEMENT, INTERACTION)
+                // go through the coordinated path: GM plans → mechanics execute → Narrator renders
                 handleCoordinatedPath(input, recentEvents, this)
             }
         }
     }
 
-    /**
-     * Analyze input complexity to determine routing strategy
-     */
-    private fun analyzeComplexity(
-        input: String,
-        state: GameState,
-        recentEvents: List<GameEvent>
-    ): PathComplexity {
-        val lowerInput = input.lowercase()
-
-        // Complex scenarios requiring coordination
-        return when {
-            // NPCs present - need to coordinate NPC reactions
-            state.getNPCsAtCurrentLocation().isNotEmpty() -> PathComplexity.COMPLEX
-
-            // Combat - may trigger quests, NPC reactions, environment changes
-            lowerInput.contains("attack") ||
-            lowerInput.contains("fight") ||
-            lowerInput.contains("combat") -> PathComplexity.COMPLEX
-
-            // Quest-related - may involve NPCs, locations, multiple objectives
-            lowerInput.contains("quest") &&
-            !lowerInput.contains("list") -> PathComplexity.COMPLEX
-
-            // Exploration with high danger level - encounters likely
-            lowerInput.contains("explore") &&
-            state.currentLocation.danger >= 3 -> PathComplexity.COMPLEX
-
-            // Simple queries - stats, inventory, quest list
-            lowerInput.contains("status") ||
-            lowerInput.contains("stat") ||
-            lowerInput.contains("inventory") ||
-            (lowerInput.contains("quest") && lowerInput.contains("list")) -> PathComplexity.SIMPLE
-
-            // Empty exploration in safe areas
-            state.getNPCsAtCurrentLocation().isEmpty() &&
-            state.currentLocation.danger < 3 -> PathComplexity.SIMPLE
-
-            // Default to simple for unknown commands
-            else -> PathComplexity.SIMPLE
-        }
-    }
-
-    /**
-     * Fast path - direct routing without Game Master coordination
-     */
-    private suspend fun handleSimplePath(
-        input: String,
-        recentEvents: List<GameEvent>,
-        flowCollector: kotlinx.coroutines.flow.FlowCollector<GameEvent>
-    ) {
-        val intentAnalysis = tools.analyzeIntent(input, gameState, recentEvents)
-
-        val validation = tools.validateAction(
-            intentAnalysis.intent,
-            intentAnalysis.target,
-            gameState
-        )
-
-        if (!validation.valid) {
-            flowCollector.emit(GameEvent.SystemNotification("Cannot perform action: ${validation.reason}"))
-            return
-        }
-
-        // Execute the action directly
-        executeAction(intentAnalysis, flowCollector, input)
-    }
 
     /**
      * Coordinated path - Game Master creates a scene plan, mechanics execute, Narrator renders.
@@ -257,6 +230,9 @@ internal class GameOrchestrator(
         flowCollector.emit(narrativeEvent)
         eventLog.add(narrativeEvent)
 
+        // Extract and register any new NPCs mentioned in the narration
+        registerNPCsFromNarration(unifiedNarration)
+
         // Emit mechanical events for UI tracking (these happen silently in the background)
         emitMechanicalEvents(sceneResults, flowCollector)
 
@@ -294,13 +270,26 @@ internal class GameOrchestrator(
                 )
 
                 if (result.xpGained > 0) {
+                    val levelBefore = gameState.playerLevel
+                    gameState = gameState.gainXP(result.xpGained)
+                    val levelAfter = gameState.playerLevel
+                    val didLevelUp = levelAfter > levelBefore
+
                     xpChange = XPChange(
                         xpGained = result.xpGained,
-                        newTotal = gameState.playerXP + result.xpGained,
-                        leveledUp = result.levelUp,
-                        newLevel = if (result.levelUp) result.newLevel else null
+                        newTotal = gameState.playerXP,
+                        leveledUp = didLevelUp,
+                        newLevel = if (didLevelUp) levelAfter else null
                     )
-                    gameState = gameState.gainXP(result.xpGained)
+                }
+
+                // Mark tutorial "test abilities" objective on combat
+                val tutorialQuest = gameState.activeQuests["quest_survive_tutorial"]
+                if (tutorialQuest != null) {
+                    val testObj = tutorialQuest.objectives.find { it.id == "tutorial_obj_test" }
+                    if (testObj != null && !testObj.isComplete()) {
+                        gameState = gameState.updateQuestObjective(tutorialQuest.id, "tutorial_obj_test", 1)
+                    }
                 }
 
                 // Handle loot
@@ -308,7 +297,7 @@ internal class GameOrchestrator(
                     itemsGained.add(ItemGain(
                         itemName = generatedItem.getName(),
                         quantity = generatedItem.getQuantity(),
-                        rarity = "common" // TODO: Get actual rarity
+                        rarity = generatedItem.rarity.name.lowercase()
                     ))
                     gameState = addItemToInventory(generatedItem)
                 }
@@ -346,18 +335,23 @@ internal class GameOrchestrator(
             }
 
             ActionType.DIALOGUE -> {
-                // Dialogue is handled through NPC reactions in the scene plan
                 val npcName = plan.primaryAction.target ?: intentAnalysis.target
                 if (npcName != null) {
                     val npc = gameState.findNPCByName(npcName)
                     if (npc != null) {
-                        // Update relationship based on dialogue
+                        // Generate NPC dialogue and save to conversation history
+                        val npcResponse = npcAgent.generateDialogue(npc, input, gameState)
+                        val updatedNPC = npc.addConversation(input, npcResponse, gameState.playerLevel)
+                        gameState = gameState.updateNPC(updatedNPC)
+
+                        // Update relationship
                         val relationshipChange = calculateRelationshipChange(input)
                         if (relationshipChange != 0) {
-                            val updatedNPC = npc.updateRelationship(gameState.gameId, relationshipChange)
-                            gameState = gameState.updateNPC(updatedNPC)
-                            stateChanges.add("Relationship with ${npc.name} changed by $relationshipChange")
+                            val npcWithRelationship = updatedNPC.updateRelationship(gameState.gameId, relationshipChange)
+                            gameState = gameState.updateNPC(npcWithRelationship)
                         }
+
+                        stateChanges.add("Spoke with ${npc.name}: $npcResponse")
                     }
                 }
             }
@@ -367,8 +361,34 @@ internal class GameOrchestrator(
                 handleQuestAction(input, questUpdates, stateChanges)
             }
 
+            ActionType.MOVEMENT -> {
+                // Try to resolve movement target to a connected location
+                val targetName = plan.primaryAction.target ?: intentAnalysis.target
+                if (targetName != null) {
+                    val connectedLocations = tools.getConnectedLocations(gameState)
+                    val allLocations = connectedLocations + gameState.customLocations.values
+
+                    // Fuzzy match: exact, contains, or partial word match
+                    val targetLower = targetName.lowercase()
+                    val destination = allLocations.find { it.name.equals(targetName, ignoreCase = true) }
+                        ?: allLocations.find { it.name.lowercase().contains(targetLower) }
+                        ?: allLocations.find { loc ->
+                            targetLower.split(" ").any { word ->
+                                word.length > 2 && loc.name.lowercase().contains(word)
+                            }
+                        }
+
+                    if (destination != null) {
+                        gameState = gameState.moveToLocation(destination)
+                        gameState = gameState.discoverLocation(destination.id)
+                        locationsDiscovered.add(destination.name)
+                        stateChanges.add("Moved to ${destination.name}")
+                    }
+                }
+            }
+
             else -> {
-                // SYSTEM_QUERY, MOVEMENT, INTERACTION - minimal mechanical impact
+                // SYSTEM_QUERY, INTERACTION - minimal mechanical impact
             }
         }
 
@@ -388,9 +408,11 @@ internal class GameOrchestrator(
     private fun addItemToInventory(generatedItem: com.rpgenerator.core.loot.GeneratedItem): GameState {
         return when (generatedItem) {
             is com.rpgenerator.core.loot.GeneratedItem.GeneratedInventoryItem -> {
-                gameState.addItem(generatedItem.item)
+                val apiRarity = com.rpgenerator.core.api.ItemRarity.valueOf(generatedItem.rarity.name)
+                gameState.addItem(generatedItem.item.copy(rarity = apiRarity))
             }
             else -> {
+                val apiRarity = com.rpgenerator.core.api.ItemRarity.valueOf(generatedItem.rarity.name)
                 gameState.addItem(
                     com.rpgenerator.core.domain.InventoryItem(
                         id = generatedItem.getId(),
@@ -398,9 +420,96 @@ internal class GameOrchestrator(
                         description = "Equipment: ${generatedItem.getName()}",
                         type = com.rpgenerator.core.domain.ItemType.MISC,
                         quantity = 1,
-                        stackable = false
+                        stackable = false,
+                        rarity = apiRarity
                     )
                 )
+            }
+        }
+    }
+
+    /**
+     * Handle quest menu actions (list, generate, complete) — short-circuit path.
+     */
+    private suspend fun handleQuestActionMenu(
+        input: String,
+        flowCollector: kotlinx.coroutines.flow.FlowCollector<GameEvent>
+    ) {
+        val lowerInput = input.lowercase()
+        when {
+            lowerInput.contains("list") || lowerInput.contains("show") -> {
+                val quests = tools.getActiveQuests(gameState)
+                if (quests.isEmpty()) {
+                    val noQuests = GameEvent.SystemNotification("You have no active quests.")
+                    flowCollector.emit(noQuests)
+                    eventLog.add(noQuests)
+                } else {
+                    quests.forEach { quest ->
+                        val questInfo = GameEvent.SystemNotification(
+                            "${quest.name} (${quest.type}) - ${quest.completionPercentage}% complete"
+                        )
+                        flowCollector.emit(questInfo)
+                        eventLog.add(questInfo)
+                    }
+                }
+            }
+            lowerInput.contains("new") || lowerInput.contains("generate") || lowerInput.contains("get") -> {
+                val newQuest = tools.generateQuest(gameState, null, input)
+                if (newQuest != null) {
+                    gameState = gameState.addQuest(newQuest)
+                    val questEvent = GameEvent.QuestUpdate(
+                        questId = newQuest.id,
+                        questName = newQuest.name,
+                        status = QuestStatus.NEW
+                    )
+                    flowCollector.emit(questEvent)
+                    eventLog.add(questEvent)
+                    val questDetails = GameEvent.SystemNotification(
+                        "New Quest: ${newQuest.name}\n${newQuest.description}"
+                    )
+                    flowCollector.emit(questDetails)
+                    eventLog.add(questDetails)
+                } else {
+                    val failure = GameEvent.SystemNotification("Failed to generate quest.")
+                    flowCollector.emit(failure)
+                    eventLog.add(failure)
+                }
+            }
+            lowerInput.contains("complete") || lowerInput.contains("turn in") -> {
+                val completableQuests = gameState.activeQuests.values.filter { it.isComplete() }
+                if (completableQuests.isEmpty()) {
+                    val none = GameEvent.SystemNotification("You have no quests ready to complete.")
+                    flowCollector.emit(none)
+                    eventLog.add(none)
+                } else {
+                    completableQuests.forEach { quest ->
+                        gameState = gameState.completeQuest(quest.id)
+                        val questCompleted = GameEvent.QuestUpdate(
+                            questId = quest.id,
+                            questName = quest.name,
+                            status = QuestStatus.COMPLETED
+                        )
+                        flowCollector.emit(questCompleted)
+                        eventLog.add(questCompleted)
+                        val rewardNotif = GameEvent.SystemNotification(
+                            "Quest Complete: ${quest.name}! Gained ${quest.rewards.xp} XP"
+                        )
+                        flowCollector.emit(rewardNotif)
+                        eventLog.add(rewardNotif)
+                        quest.rewards.items.forEach { item ->
+                            val itemGained = GameEvent.ItemGained(item.id, item.name, item.quantity)
+                            flowCollector.emit(itemGained)
+                            eventLog.add(itemGained)
+                        }
+                    }
+                }
+            }
+            else -> {
+                val help = GameEvent.SystemNotification(
+                    "Quest commands: 'list quests', 'get new quest', 'complete quests'"
+                )
+                flowCollector.emit(help)
+                eventLog.add(help)
             }
         }
     }
@@ -544,362 +653,6 @@ internal class GameOrchestrator(
         else -> event.toString()
     }
 
-    /**
-     * Execute the validated action based on intent
-     */
-    private suspend fun executeAction(
-        intentAnalysis: com.rpgenerator.core.tools.IntentAnalysis,
-        flowCollector: kotlinx.coroutines.flow.FlowCollector<GameEvent>,
-        input: String = ""
-    ) {
-        when (intentAnalysis.intent) {
-            Intent.COMBAT -> {
-                val target = intentAnalysis.target ?: "unknown enemy"
-                val combatResult = tools.resolveCombat(target, gameState)
-
-                val narration = narratorAgent.narrateCombat(
-                    input = input,
-                    target = target,
-                    outcome = com.rpgenerator.core.rules.CombatOutcome(
-                        damage = combatResult.damage,
-                        xpGain = combatResult.xpGained,
-                        newXP = gameState.playerXP + combatResult.xpGained,
-                        levelUp = combatResult.levelUp,
-                        newLevel = combatResult.newLevel,
-                        loot = combatResult.loot,
-                        gold = combatResult.gold
-                    ),
-                    state = gameState
-                )
-
-                val narratorEvent = GameEvent.NarratorText(narration)
-                flowCollector.emit(narratorEvent)
-                eventLog.add(narratorEvent)
-
-                val combatLog = GameEvent.CombatLog("You dealt ${combatResult.damage} damage to $target")
-                flowCollector.emit(combatLog)
-                eventLog.add(combatLog)
-
-                val statChange = GameEvent.StatChange(
-                    "xp",
-                    gameState.playerXP.toInt(),
-                    (gameState.playerXP + combatResult.xpGained).toInt()
-                )
-                flowCollector.emit(statChange)
-                eventLog.add(statChange)
-
-                if (combatResult.levelUp) {
-                    val levelUpNotif = GameEvent.SystemNotification("Level up! You are now level ${combatResult.newLevel}")
-                    flowCollector.emit(levelUpNotif)
-                    eventLog.add(levelUpNotif)
-                }
-
-                // Handle loot drops
-                if (combatResult.loot.isNotEmpty()) {
-                    combatResult.loot.forEach { generatedItem ->
-                        val itemGained = GameEvent.ItemGained(
-                            itemId = generatedItem.getId(),
-                            itemName = generatedItem.getName(),
-                            quantity = generatedItem.getQuantity()
-                        )
-                        flowCollector.emit(itemGained)
-                        eventLog.add(itemGained)
-
-                        // Add to character inventory/equipment
-                        gameState = when (generatedItem) {
-                            is com.rpgenerator.core.loot.GeneratedItem.GeneratedInventoryItem -> {
-                                gameState.addItem(generatedItem.item)
-                            }
-                            is com.rpgenerator.core.loot.GeneratedItem.GeneratedWeapon,
-                            is com.rpgenerator.core.loot.GeneratedItem.GeneratedArmor,
-                            is com.rpgenerator.core.loot.GeneratedItem.GeneratedAccessory -> {
-                                // Equipment items are added to inventory as InventoryItem placeholders
-                                // or could be auto-equipped if better than current
-                                gameState.addItem(
-                                    com.rpgenerator.core.domain.InventoryItem(
-                                        id = generatedItem.getId(),
-                                        name = generatedItem.getName(),
-                                        description = "Equipment: ${generatedItem.getName()}",
-                                        type = com.rpgenerator.core.domain.ItemType.MISC,
-                                        quantity = 1,
-                                        stackable = false
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Handle gold
-                if (combatResult.gold > 0) {
-                    val goldNotif = GameEvent.SystemNotification("You found ${combatResult.gold} gold!")
-                    flowCollector.emit(goldNotif)
-                    eventLog.add(goldNotif)
-                    // TODO: Add gold tracking to character sheet
-                }
-
-                gameState = gameState.gainXP(combatResult.xpGained)
-
-                // Check if player died in combat
-                if (gameState.isDead) {
-                    handleDeath(flowCollector, target)
-                    return
-                }
-            }
-
-            Intent.EXPLORATION -> {
-                // Check if we should generate a new location
-                if (intentAnalysis.shouldGenerateLocation && intentAnalysis.locationGenerationContext != null) {
-                    val generatedLocation = tools.generateLocation(
-                        parentLocation = gameState.currentLocation,
-                        discoveryContext = intentAnalysis.locationGenerationContext,
-                        state = gameState
-                    )
-
-                    if (generatedLocation != null) {
-                        gameState = gameState.addCustomLocation(generatedLocation)
-                        val discovery = GameEvent.SystemNotification("Discovered: ${generatedLocation.name}")
-                        flowCollector.emit(discovery)
-                        eventLog.add(discovery)
-
-                        val narration = GameEvent.NarratorText(
-                            "Your exploration reveals ${generatedLocation.name}. ${generatedLocation.description}"
-                        )
-                        flowCollector.emit(narration)
-                        eventLog.add(narration)
-                    } else {
-                        val failure = GameEvent.NarratorText("Your search turns up nothing of interest.")
-                        flowCollector.emit(failure)
-                        eventLog.add(failure)
-                    }
-                } else {
-                    // Normal exploration - discover connected template locations
-                    val connectedLocations = tools.getConnectedLocations(gameState)
-
-                    connectedLocations.forEach { loc ->
-                        if (!gameState.discoveredTemplateLocations.contains(loc.id)) {
-                            gameState = gameState.discoverLocation(loc.id)
-                            val discovery = GameEvent.SystemNotification("Discovered: ${loc.name}")
-                            flowCollector.emit(discovery)
-                            eventLog.add(discovery)
-                        }
-                    }
-
-                    // Generate contextual narration based on player input
-                    val explorationNarration = narratorAgent.narrateExploration(
-                        input = input,
-                        state = gameState,
-                        connectedLocations = connectedLocations
-                    )
-                    val narration = GameEvent.NarratorText(explorationNarration)
-                    flowCollector.emit(narration)
-                    eventLog.add(narration)
-                }
-            }
-
-            Intent.SYSTEM_QUERY -> {
-                val status = tools.getPlayerStatus(gameState)
-                val statusText = "Level ${status.level}, XP: ${status.xp}/${status.xpToNextLevel}"
-                val statusEvent = GameEvent.SystemNotification(statusText)
-                flowCollector.emit(statusEvent)
-                eventLog.add(statusEvent)
-            }
-
-            Intent.NPC_DIALOGUE -> {
-                val npcName = intentAnalysis.target ?: "unknown"
-                var npc = gameState.findNPCByName(npcName)
-
-                // If fuzzy matching failed, try LLM resolution
-                if (npc == null) {
-                    val availableNpcs = gameState.getNPCsAtCurrentLocation()
-                    if (availableNpcs.isEmpty()) {
-                        val notFound = GameEvent.SystemNotification("There's no one here to talk to.")
-                        flowCollector.emit(notFound)
-                        eventLog.add(notFound)
-                        return
-                    }
-
-                    // Use LLM to resolve which NPC the player means
-                    npc = resolveNPCWithLLM(input, availableNpcs)
-
-                    if (npc == null) {
-                        val options = availableNpcs.joinToString(", ") { it.name }
-                        val notFound = GameEvent.SystemNotification("Who do you want to talk to? Available: $options")
-                        flowCollector.emit(notFound)
-                        eventLog.add(notFound)
-                        return
-                    }
-                }
-
-                // Generate NPC dialogue using NPCAgent
-                val npcResponse = npcAgent.generateDialogue(npc, input, gameState)
-
-                // Emit NPC dialogue event
-                val dialogueEvent = GameEvent.NPCDialogue(
-                    npcId = npc.id,
-                    npcName = npc.name,
-                    text = npcResponse
-                )
-                flowCollector.emit(dialogueEvent)
-                eventLog.add(dialogueEvent)
-
-                // Update NPC with conversation history
-                val updatedNPC = npc.addConversation(input, npcResponse, gameState.playerLevel)
-                gameState = gameState.updateNPC(updatedNPC)
-
-                // Check if the dialogue should affect relationship (simple heuristic for now)
-                // In a more advanced system, this could be determined by sentiment analysis
-                val relationshipChange = if (input.lowercase().contains("thank") ||
-                                           input.lowercase().contains("please")) {
-                    5
-                } else if (input.lowercase().contains("insult") ||
-                          input.lowercase().contains("attack") ||
-                          input.lowercase().contains("threaten")) {
-                    -10
-                } else {
-                    1 // Small positive gain for any interaction
-                }
-
-                if (relationshipChange != 0) {
-                    val npcWithRelationship = updatedNPC.updateRelationship(gameState.gameId, relationshipChange)
-                    gameState = gameState.updateNPC(npcWithRelationship)
-
-                    val relationship = npcWithRelationship.getRelationship(gameState.gameId)
-                    if (relationshipChange > 0 && relationship.affinity % 20 == 0) {
-                        // Notify on milestone relationship increases
-                        val relNotif = GameEvent.SystemNotification(
-                            "${npc.name} seems to trust you more. (${relationship.getStatus()})"
-                        )
-                        flowCollector.emit(relNotif)
-                        eventLog.add(relNotif)
-                    }
-                }
-            }
-
-            Intent.QUEST_ACTION -> {
-                val lowerInput = input.lowercase()
-
-                when {
-                    lowerInput.contains("list") || lowerInput.contains("show") -> {
-                        val quests = tools.getActiveQuests(gameState)
-
-                        if (quests.isEmpty()) {
-                            val noQuests = GameEvent.SystemNotification("You have no active quests.")
-                            flowCollector.emit(noQuests)
-                            eventLog.add(noQuests)
-                        } else {
-                            quests.forEach { quest ->
-                                val questInfo = GameEvent.SystemNotification(
-                                    "${quest.name} (${quest.type}) - ${quest.completionPercentage}% complete"
-                                )
-                                flowCollector.emit(questInfo)
-                                eventLog.add(questInfo)
-                            }
-                        }
-                    }
-
-                    lowerInput.contains("new") || lowerInput.contains("generate") || lowerInput.contains("get") -> {
-                        val newQuest = tools.generateQuest(gameState, null, input)
-
-                        if (newQuest != null) {
-                            gameState = gameState.addQuest(newQuest)
-
-                            val questEvent = GameEvent.QuestUpdate(
-                                questId = newQuest.id,
-                                questName = newQuest.name,
-                                status = QuestStatus.NEW
-                            )
-                            flowCollector.emit(questEvent)
-                            eventLog.add(questEvent)
-
-                            val questDetails = GameEvent.SystemNotification(
-                                "New Quest: ${newQuest.name}\n${newQuest.description}"
-                            )
-                            flowCollector.emit(questDetails)
-                            eventLog.add(questDetails)
-                        } else {
-                            val failure = GameEvent.SystemNotification("Failed to generate quest.")
-                            flowCollector.emit(failure)
-                            eventLog.add(failure)
-                        }
-                    }
-
-                    lowerInput.contains("complete") || lowerInput.contains("turn in") -> {
-                        val completableQuests = gameState.activeQuests.values.filter { it.isComplete() }
-
-                        if (completableQuests.isEmpty()) {
-                            val none = GameEvent.SystemNotification("You have no quests ready to complete.")
-                            flowCollector.emit(none)
-                            eventLog.add(none)
-                        } else {
-                            completableQuests.forEach { quest ->
-                                gameState = gameState.completeQuest(quest.id)
-
-                                val questCompleted = GameEvent.QuestUpdate(
-                                    questId = quest.id,
-                                    questName = quest.name,
-                                    status = QuestStatus.COMPLETED
-                                )
-                                flowCollector.emit(questCompleted)
-                                eventLog.add(questCompleted)
-
-                                val rewardNotif = GameEvent.SystemNotification(
-                                    "Quest Complete: ${quest.name}! Gained ${quest.rewards.xp} XP"
-                                )
-                                flowCollector.emit(rewardNotif)
-                                eventLog.add(rewardNotif)
-
-                                quest.rewards.items.forEach { item ->
-                                    val itemGained = GameEvent.ItemGained(item.id, item.name, item.quantity)
-                                    flowCollector.emit(itemGained)
-                                    eventLog.add(itemGained)
-                                }
-                            }
-                        }
-                    }
-
-                    else -> {
-                        val help = GameEvent.SystemNotification(
-                            "Quest commands: 'list quests', 'get new quest', 'complete quests'"
-                        )
-                        flowCollector.emit(help)
-                        eventLog.add(help)
-                    }
-                }
-            }
-
-            Intent.CLASS_SELECTION -> {
-                handleClassSelection(intentAnalysis.target, input, flowCollector)
-            }
-
-            Intent.SKILL_MENU -> {
-                handleSkillMenu(flowCollector)
-            }
-
-            Intent.USE_SKILL -> {
-                handleUseSkill(intentAnalysis.target, flowCollector, input)
-            }
-
-            Intent.SKILL_EVOLUTION -> {
-                handleSkillEvolution(intentAnalysis.target, flowCollector)
-            }
-
-            Intent.SKILL_FUSION -> {
-                handleSkillFusion(flowCollector, input)
-            }
-
-            Intent.STATUS_MENU -> {
-                handleStatusMenu(flowCollector)
-            }
-
-            Intent.INVENTORY_MENU -> {
-                handleInventoryMenu(flowCollector)
-            }
-        }
-
-        // Track quest progress after each action
-        trackQuestProgress(intentAnalysis.intent, intentAnalysis.target, flowCollector)
-    }
 
     /**
      * Handle class selection during tutorial.
@@ -1139,7 +892,14 @@ REASON: [Brief reason]
         val displayName = customName ?: selectedClass.displayName
         val description = customDescription ?: selectedClass.description
 
-        val newSheet = gameState.characterSheet.chooseInitialClass(selectedClass)
+        var newSheet = gameState.characterSheet.chooseInitialClass(selectedClass)
+
+        // Generate starter skills via LLM
+        val starterSkills = generateStarterSkills(displayName, description)
+        for (skill in starterSkills) {
+            newSheet = newSheet.addSkill(skill)
+        }
+
         gameState = gameState.copy(characterSheet = newSheet)
 
         // Mark tutorial objective complete
@@ -1164,6 +924,21 @@ REASON: [Brief reason]
         flowCollector.emit(classChosen)
         eventLog.add(classChosen)
 
+        // Emit starter skills notification
+        if (starterSkills.isNotEmpty()) {
+            val skillsText = starterSkills.joinToString("\n") { skill ->
+                "  【${skill.name}】 ${skill.description}"
+            }
+            val skillsNotification = GameEvent.SystemNotification(
+                "╔════════════════════════════════════════╗\n" +
+                "║         STARTER SKILLS GRANTED         ║\n" +
+                "╚════════════════════════════════════════╝\n\n" +
+                skillsText
+            )
+            flowCollector.emit(skillsNotification)
+            eventLog.add(skillsNotification)
+        }
+
         // Generate narrative for class acquisition
         val narration = narratorAgent.narrateClassAcquisition(gameState, selectedClass)
         val narrativeEvent = GameEvent.NarratorText(narration)
@@ -1176,6 +951,81 @@ REASON: [Brief reason]
         )
         flowCollector.emit(progressEvent)
         eventLog.add(progressEvent)
+    }
+
+    /**
+     * Generate starter skills for a class using LLM.
+     */
+    private suspend fun generateStarterSkills(className: String, classDescription: String): List<com.rpgenerator.core.skill.Skill> {
+        val prompt = """
+Generate 2 starter skills for a "$className" class in a LitRPG System Integration setting.
+Class description: $classDescription
+
+For each skill, provide:
+- NAME: A short, evocative skill name (2-4 words)
+- TYPE: ACTIVE or PASSIVE
+- DESC: One sentence describing what the skill does
+
+Format your response EXACTLY like this (no other text):
+SKILL1_NAME: [name]
+SKILL1_TYPE: [ACTIVE/PASSIVE]
+SKILL1_DESC: [description]
+SKILL2_NAME: [name]
+SKILL2_TYPE: [ACTIVE/PASSIVE]
+SKILL2_DESC: [description]
+""".trim()
+
+        return try {
+            val agent = llm.startAgent("You generate LitRPG skills. Follow the exact format requested.")
+            val response = agent.sendMessage(prompt).toList().joinToString("")
+
+            parseGeneratedSkills(response, className)
+        } catch (e: Exception) {
+            // Fallback to generic skills if LLM fails
+            listOf(
+                com.rpgenerator.core.skill.SkillDatabase.createGeneratedSkill(
+                    name = "$className Strike",
+                    description = "A basic attack technique granted by the System upon class selection.",
+                    className = className,
+                    isActive = true
+                )
+            )
+        }
+    }
+
+    /**
+     * Parse LLM response into Skill objects.
+     */
+    private fun parseGeneratedSkills(response: String, className: String): List<com.rpgenerator.core.skill.Skill> {
+        val skills = mutableListOf<com.rpgenerator.core.skill.Skill>()
+
+        val skill1Name = Regex("SKILL1_NAME:\\s*(.+)").find(response)?.groupValues?.get(1)?.trim()
+        val skill1Type = Regex("SKILL1_TYPE:\\s*(ACTIVE|PASSIVE)", RegexOption.IGNORE_CASE).find(response)?.groupValues?.get(1)?.trim()
+        val skill1Desc = Regex("SKILL1_DESC:\\s*(.+)").find(response)?.groupValues?.get(1)?.trim()
+
+        if (skill1Name != null && skill1Desc != null) {
+            skills.add(com.rpgenerator.core.skill.SkillDatabase.createGeneratedSkill(
+                name = skill1Name,
+                description = skill1Desc,
+                className = className,
+                isActive = skill1Type?.uppercase() != "PASSIVE"
+            ))
+        }
+
+        val skill2Name = Regex("SKILL2_NAME:\\s*(.+)").find(response)?.groupValues?.get(1)?.trim()
+        val skill2Type = Regex("SKILL2_TYPE:\\s*(ACTIVE|PASSIVE)", RegexOption.IGNORE_CASE).find(response)?.groupValues?.get(1)?.trim()
+        val skill2Desc = Regex("SKILL2_DESC:\\s*(.+)").find(response)?.groupValues?.get(1)?.trim()
+
+        if (skill2Name != null && skill2Desc != null) {
+            skills.add(com.rpgenerator.core.skill.SkillDatabase.createGeneratedSkill(
+                name = skill2Name,
+                description = skill2Desc,
+                className = className,
+                isActive = skill2Type?.uppercase() != "PASSIVE"
+            ))
+        }
+
+        return skills
     }
 
     /**
@@ -1295,9 +1145,9 @@ Respond with ONLY the number (1, 2, etc.) or "NONE" if unclear.
         // Mark tutorial objective if applicable
         val tutorialQuest = gameState.activeQuests["quest_survive_tutorial"]
         if (tutorialQuest != null) {
-            val skillObj = tutorialQuest.objectives.find { it.id == "tutorial_obj_skill" }
+            val skillObj = tutorialQuest.objectives.find { it.id == "tutorial_obj_test" }
             if (skillObj != null && !skillObj.isComplete()) {
-                gameState = gameState.updateQuestObjective(tutorialQuest.id, "tutorial_obj_skill", 1)
+                gameState = gameState.updateQuestObjective(tutorialQuest.id, "tutorial_obj_test", 1)
                 val progressNotif = GameEvent.SystemNotification(
                     "Quest Progress: Survive the Tutorial - Learn a basic skill (Complete)"
                 )
@@ -1755,57 +1605,6 @@ Respond with ONLY the number (1, 2, etc.) or "NONE" if unclear.
         }
     }
 
-    private suspend fun trackQuestProgress(
-        intent: Intent,
-        target: String?,
-        flowCollector: kotlinx.coroutines.flow.FlowCollector<GameEvent>
-    ) {
-
-        gameState.activeQuests.values.forEach { quest ->
-            quest.objectives.forEach { objective ->
-                val shouldUpdate = when (objective.type) {
-                    ObjectiveType.KILL -> {
-                        intent == Intent.COMBAT && target != null &&
-                        objective.targetId.lowercase() == target.lowercase()
-                    }
-                    ObjectiveType.REACH_LOCATION -> {
-                        objective.targetId == gameState.currentLocation.id && !objective.isComplete()
-                    }
-                    ObjectiveType.EXPLORE -> {
-                        intent == Intent.EXPLORATION &&
-                        gameState.discoveredTemplateLocations.contains(objective.targetId)
-                    }
-                    else -> false
-                }
-
-                if (shouldUpdate && !objective.isComplete()) {
-                    gameState = gameState.updateQuestObjective(quest.id, objective.id, 1)
-
-                    val updatedQuest = gameState.activeQuests[quest.id]
-                    val updatedObj = updatedQuest?.objectives?.find { it.id == objective.id }
-
-                    if (updatedObj != null) {
-                        val progressEvent = GameEvent.SystemNotification(
-                            "Quest Progress: ${quest.name} - ${updatedObj.progressDescription()}"
-                        )
-                        flowCollector.emit(progressEvent)
-                        eventLog.add(progressEvent)
-
-                        if (updatedQuest.isComplete()) {
-                            val questUpdateEvent = GameEvent.QuestUpdate(
-                                questId = quest.id,
-                                questName = quest.name,
-                                status = QuestStatus.IN_PROGRESS
-                            )
-                            flowCollector.emit(questUpdateEvent)
-                            eventLog.add(questUpdateEvent)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /**
      * Handle player death based on system type.
      */
@@ -1885,29 +1684,53 @@ Respond with ONLY the number (1, 2, etc.) or "NONE" if unclear.
      * Silent version - only updates game state, does NOT emit any events.
      * Events are emitted separately via emitInitialQuestEvents() after the opening narration.
      */
+    /**
+     * Extract NPCs mentioned in narration text and register them in game state.
+     * This ensures narratively-introduced NPCs appear in game_get_npcs_here and can be interacted with.
+     */
+    private suspend fun registerNPCsFromNarration(narrationText: String) {
+        try {
+            val newNPCs = gameMasterAgent.extractNPCsFromNarration(narrationText, gameState)
+            for (npc in newNPCs) {
+                gameState = gameState.addNPC(npc)
+                npcManager.registerGeneratedNPC(npc)
+            }
+        } catch (e: Exception) {
+            // NPC extraction is best-effort — don't break the game if it fails
+        }
+    }
+
     private suspend fun initializeDynamicNPCsSilent() {
-        // Start story planning in background - don't block game start
+        // If we have a seed, create NarratorContext from it (no AI call needed)
+        // Otherwise fall back to AI-generated story planning
         if (!storyPlanningStarted) {
             storyPlanningStarted = true
-            backgroundScope.launch {
-                try {
-                    val foundation = storyPlanningService.initializeStory(
-                        gameId = gameState.gameId,
-                        systemType = gameState.systemType,
-                        playerName = gameState.playerName,
-                        backstory = gameState.backstory,
-                        startingLocation = gameState.currentLocation
-                    )
-                    storyFoundation = foundation
-                } catch (e: Exception) {
-                    // Story planning failed - game continues without it
-                    println("Story planning failed: ${e.message}")
+
+            if (worldSeed != null) {
+                // Create context directly from the seed - no AI call needed
+                storyFoundation = createFoundationFromSeed(worldSeed)
+            } else {
+                // Fall back to AI-generated story planning for legacy games
+                backgroundScope.launch {
+                    try {
+                        val foundation = storyPlanningService.initializeStory(
+                            gameId = gameState.gameId,
+                            systemType = gameState.systemType,
+                            playerName = gameState.playerName,
+                            backstory = gameState.backstory,
+                            startingLocation = gameState.currentLocation
+                        )
+                        storyFoundation = foundation
+                    } catch (e: Exception) {
+                        // Story planning failed - game continues without it
+                        println("Story planning failed: ${e.message}")
+                    }
                 }
             }
         }
 
         // Generate tutorial guide dynamically if in tutorial zone
-        if (gameState.currentLocation.id.contains("tutorial")) {
+        if (gameState.currentLocation.biome == Biome.TUTORIAL_ZONE) {
             // Generate unique tutorial guide for this playthrough
             val tutorialGuide = npcArchetypeGenerator.generateTutorialGuide(
                 playerName = gameState.playerName,
@@ -1961,7 +1784,7 @@ Respond with ONLY the number (1, 2, etc.) or "NONE" if unclear.
         }
 
         // Emit notification about tutorial guide's presence (if in tutorial)
-        if (gameState.currentLocation.id.contains("tutorial")) {
+        if (gameState.currentLocation.biome == Biome.TUTORIAL_ZONE) {
             val tutorialGuide = gameState.getNPCsAtCurrentLocation().firstOrNull()
             if (tutorialGuide != null) {
                 val guideNotice = GameEvent.SystemNotification("${tutorialGuide.name} materializes before you.")
@@ -1977,7 +1800,7 @@ Respond with ONLY the number (1, 2, etc.) or "NONE" if unclear.
      */
     private suspend fun initializeDynamicNPCs(flowCollector: kotlinx.coroutines.flow.FlowCollector<GameEvent>) {
         // Generate tutorial guide dynamically if in tutorial zone
-        if (gameState.currentLocation.id.contains("tutorial")) {
+        if (gameState.currentLocation.biome == Biome.TUTORIAL_ZONE) {
             // Generate unique tutorial guide for this playthrough
             val tutorialGuide = npcArchetypeGenerator.generateTutorialGuide(
                 playerName = gameState.playerName,
@@ -2177,4 +2000,50 @@ Respond with ONLY the number (1, 2, etc.) or "NONE" if unclear.
     }
 
     fun getState(): GameState = gameState
+
+    fun getEventLog(): List<GameEvent> = eventLog.toList()
+
+    /**
+     * Create a StoryFoundation from a WorldSeed without AI generation.
+     * This allows seeds to provide all narrative context directly.
+     */
+    private fun createFoundationFromSeed(seed: com.rpgenerator.core.story.WorldSeed): StoryFoundation {
+        val narratorContext = NarratorContext(
+            systemName = seed.name,
+            systemPersonality = seed.systemVoice.personality,
+            centralMystery = seed.corePlot.centralQuestion,
+            primaryThreat = seed.worldState.threats.firstOrNull() ?: "Unknown threats",
+            thematicCore = seed.themes.firstOrNull() ?: "Survival and growth",
+            activeThreads = seed.corePlot.majorChoices,
+            upcomingBeats = listOf(seed.corePlot.actOneGoal),
+            currentForeshadowing = seed.systemVoice.exampleMessages.take(2)
+        )
+
+        val systemDefinition = com.rpgenerator.core.story.SystemDefinition(
+            systemType = gameState.systemType,
+            systemName = seed.name,
+            systemPersonality = seed.systemVoice.personality,
+            uniqueMechanic = seed.powerSystem.uniqueMechanic,
+            centralMystery = seed.corePlot.centralQuestion,
+            primaryThreat = seed.worldState.threats.firstOrNull() ?: "Unknown threats",
+            thematicCore = seed.themes.firstOrNull() ?: "Survival and growth",
+            worldState = seed.worldState.atmosphere,
+            keyFactions = emptyList(),
+            narrativeHooks = seed.corePlot.majorChoices
+        )
+
+        val plotGraph = com.rpgenerator.core.domain.PlotGraph(
+            gameId = gameState.gameId,
+            nodes = emptyMap(),
+            edges = emptyMap()
+        )
+
+        return StoryFoundation(
+            systemDefinition = systemDefinition,
+            plotGraph = plotGraph,
+            plotThreads = emptyList(), // Seeds use reactive storytelling, not pre-planned threads
+            initialForeshadowing = emptyList(),
+            narratorContext = narratorContext
+        )
+    }
 }

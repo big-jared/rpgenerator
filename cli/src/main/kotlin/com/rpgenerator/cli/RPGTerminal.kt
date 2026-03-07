@@ -4,6 +4,7 @@ import com.github.ajalt.mordant.rendering.TextColors.*
 import com.github.ajalt.mordant.rendering.TextStyles.*
 import com.github.ajalt.mordant.terminal.Terminal
 import com.rpgenerator.core.api.*
+import com.rpgenerator.core.story.WorldSeeds
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.runBlocking
 
@@ -243,112 +244,46 @@ class RPGTerminal(
             out((bold + yellow)("=== Game Setup ==="))
             out()
 
-            // Step 1: Playstyle / Goal Selection
-            var playstyleMode: Int? = null
-            while (playstyleMode == null) {
-                out(cyan("How would you like to define your playstyle?"))
-                out("  ${green("1.")} Enter your own goal/playstyle")
-                out("  ${green("2.")} Select from preset playstyles")
-                out("  ${green("3.")} Unknown - Let the game adapt to you")
+            // Step 1: World Seed Selection
+            var selectedSeedId: String? = null
+            while (selectedSeedId == null) {
+                out(cyan("Choose your world:"))
+                out()
+                WorldSeeds.all().forEachIndexed { index, seed ->
+                    out("  ${green("${index + 1}.")} ${bold(seed.displayName)}")
+                    out("     ${dim(seed.tagline)}")
+                }
+                out()
+                out("  ${green("R.")} Random - Let fate decide")
                 out("  ${yellow("B.")} Back to main menu")
+                out()
                 out(brightBlue("> ").toString(), newline = false)
 
-                when (val input = input().trim()?.uppercase()) {
-                    "B", "BACK" -> return // Return to main menu
-                    "1", "2", "3" -> playstyleMode = input.toInt()
-                    else -> out(red("Invalid choice. Please enter 1, 2, 3, or B to go back."))
+                val userInput = input().trim()?.uppercase()
+                when {
+                    userInput == "B" || userInput == "BACK" -> return // Return to main menu
+                    userInput == "R" || userInput == "RANDOM" -> {
+                        val randomSeed = WorldSeeds.random()
+                        selectedSeedId = randomSeed.id
+                        out()
+                        out(cyan("The fates have chosen: ${bold(randomSeed.displayName)}"))
+                        out(dim(randomSeed.tagline))
+                    }
+                    userInput?.toIntOrNull() in 1..WorldSeeds.all().size -> {
+                        val seed = WorldSeeds.all()[userInput!!.toInt() - 1]
+                        selectedSeedId = seed.id
+                    }
+                    else -> out(red("Invalid choice. Please enter 1-${WorldSeeds.all().size}, R for random, or B to go back."))
                 }
             }
 
-            // Step 2: Get playstyle details based on mode
-            var playstyle = "unknown"
-            var playstyleDescription = ""
-            var playstyleConfirmed = false
+            val selectedSeed = WorldSeeds.byId(selectedSeedId)!!
 
-            while (!playstyleConfirmed) {
-                when (playstyleMode) {
-                    1 -> {
-                        // Custom playstyle
-                        out()
-                        out(yellow("Describe your goal or playstyle (e.g., 'I want to build a merchant empire' or 'Focus on stealth and assassinations'):").toString())
-                        out("  ${yellow("B.")} Back")
-                        out(brightBlue("> ").toString(), newline = false)
-                        val userGoal = input().trim()
-                        if (userGoal?.uppercase() == "B" || userGoal?.uppercase() == "BACK") {
-                            playstyleMode = null // Go back to step 1
-                            out()
-                            continue@setupLoop
-                        }
-                        if (!userGoal.isNullOrEmpty()) {
-                            playstyleDescription = expandPlaystyleGoal(userGoal)
-                            playstyle = "custom"
-                            playstyleConfirmed = true
-                        } else {
-                            playstyle = "unknown"
-                            playstyleDescription = "Adapt to the player's choices and actions as they play."
-                            playstyleConfirmed = true
-                        }
-                    }
-                    2 -> {
-                        // Preset playstyles
-                        out()
-                        out(cyan("Select a preset playstyle:"))
-                        out("  ${green("1.")} Power Fantasy - Become overpowered, rapid progression")
-                        out("  ${green("2.")} Story & Roleplay - Rich narrative, character development")
-                        out("  ${green("3.")} Challenge & Strategy - Difficult tactical gameplay")
-                        out("  ${green("4.")} Exploration & Discovery - Uncover secrets and lore")
-                        out("  ${green("5.")} Balanced - Mix of all the above")
-                        out("  ${yellow("B.")} Back")
-                        out(brightBlue("> ").toString(), newline = false)
-
-                        when (val input = input().trim()?.uppercase()) {
-                            "B", "BACK" -> {
-                                playstyleMode = null
-                                out()
-                                continue@setupLoop
-                            }
-                            "1" -> {
-                                playstyle = "power_fantasy"
-                                playstyleDescription = "The player wants to feel powerful and see rapid progression. Provide exciting power-ups, satisfying victories, and opportunities to dominate challenges."
-                                playstyleConfirmed = true
-                            }
-                            "2" -> {
-                                playstyle = "story_roleplay"
-                                playstyleDescription = "The player values narrative depth and character development. Create compelling NPCs, moral dilemmas, and story-driven choices with consequences."
-                                playstyleConfirmed = true
-                            }
-                            "3" -> {
-                                playstyle = "challenge_strategy"
-                                playstyleDescription = "The player seeks difficult tactical gameplay. Present challenging encounters that require planning, resource management, and strategic thinking."
-                                playstyleConfirmed = true
-                            }
-                            "4" -> {
-                                playstyle = "exploration_discovery"
-                                playstyleDescription = "The player loves uncovering secrets and exploring. Include hidden areas, mysterious lore, and rewards for curiosity."
-                                playstyleConfirmed = true
-                            }
-                            "5" -> {
-                                playstyle = "balanced"
-                                playstyleDescription = "The player wants a balanced experience with elements of power progression, story, challenge, and exploration."
-                                playstyleConfirmed = true
-                            }
-                            else -> out(red("Invalid choice. Please enter 1-5 or B to go back."))
-                        }
-                    }
-                    3 -> {
-                        // Unknown - adapt dynamically
-                        playstyle = "unknown"
-                        playstyleDescription = "Adapt to the player's choices and actions as they play. Pay attention to what they engage with and adjust accordingly."
-                        playstyleConfirmed = true
-                    }
-                }
-            }
-
-            // Log playstyle selection
+            // Log seed selection
             debugWebServer?.logSetupEvent(
-                eventType = "PLAYSTYLE_SELECTED",
+                eventType = "SEED_SELECTED",
                 category = "SETUP",
-                text = "Playstyle: $playstyle - $playstyleDescription"
+                text = "World Seed: ${selectedSeed.displayName} (${selectedSeed.id}) - ${selectedSeed.tagline}"
             )
 
             // Step 3: Character Name
@@ -363,8 +298,7 @@ class RPGTerminal(
                 out(brightBlue("> ").toString(), newline = false)
                 val input = input().trim()
                 if (input?.uppercase() == "B" || input?.uppercase() == "BACK") {
-                    playstyleMode = null
-                    playstyleConfirmed = false
+                    selectedSeedId = null
                     out()
                     continue@setupLoop
                 }
@@ -469,7 +403,7 @@ class RPGTerminal(
             // Default to Normal difficulty
             val difficulty = Difficulty.NORMAL
 
-            // Create game config - using SYSTEM_INTEGRATION as the only supported type
+            // Create game config with selected seed
             val config = GameConfig(
                 systemType = SystemType.SYSTEM_INTEGRATION,
                 difficulty = difficulty,
@@ -479,10 +413,7 @@ class RPGTerminal(
                     statAllocation = if (customStats != null) StatAllocation.CUSTOM else StatAllocation.BALANCED,
                     customStats = customStats
                 ),
-                playerPreferences = mapOf(
-                    "playstyle" to playstyle,
-                    "playstyle_description" to playstyleDescription
-                )
+                seedId = selectedSeedId
             )
 
             out()
@@ -508,7 +439,7 @@ class RPGTerminal(
             debugWebServer?.logSetupEvent(
                 eventType = "GAME_CREATED",
                 category = "SETUP",
-                text = "Game created! Character: $name, Playstyle: $playstyle, Difficulty: ${difficulty.name}",
+                text = "Game created! Character: $name, World: ${selectedSeed.displayName}, Difficulty: ${difficulty.name}",
                 importance = "HIGH"
             )
 
@@ -725,6 +656,10 @@ class RPGTerminal(
             is GameEvent.SystemNotification -> {
                 out(brightBlue("ℹ ") + event.text)
             }
+            is GameEvent.SceneImage -> { /* Multimodal - handled by UI */ }
+            is GameEvent.NarratorAudio -> { /* Multimodal - handled by UI */ }
+            is GameEvent.MusicChange -> { /* Multimodal - handled by UI */ }
+            is GameEvent.NPCPortrait -> { /* Multimodal - handled by UI */ }
         }
     }
 
@@ -900,55 +835,6 @@ class RPGTerminal(
     }
 
     private var agentCounter = 0
-
-    private suspend fun expandPlaystyleGoal(userGoal: String): String {
-        out()
-        val loadingJob = showLoading("Processing goal...")
-        val agentId = "playstyle_${++agentCounter}"
-
-        return try {
-            val systemPrompt = """
-                You are a game design assistant helping convert player goals into actionable DM instructions.
-                Take a player's stated goal or playstyle and expand it into clear guidelines for the game master.
-                """.trimIndent()
-
-            val agentStream = llm.startAgent(systemPrompt)
-
-            val userMessage = """
-                Player's goal/playstyle: "$userGoal"
-
-                Convert this into 2-3 sentences of clear DM instructions that explain:
-                - What the player wants to achieve or experience
-                - How to bias encounters, rewards, and narrative to support this goal
-                - What to emphasize and what to de-emphasize
-
-                Example:
-                Input: "I want to build a merchant empire"
-                Output: "The player wants to focus on economics and trade. Emphasize opportunities for buying/selling, negotiating deals, and building business relationships. Present challenges related to supply chains, competition, and market dynamics rather than pure combat."
-
-                Write the DM instructions now:
-                """.trimIndent()
-
-            debugWebServer?.logAgentMessage(agentId, "user", userMessage)
-
-            val expanded = agentStream.sendMessage(userMessage).toList().joinToString("")
-
-            debugWebServer?.logAgentMessage(agentId, "assistant", expanded)
-
-            // Log playstyle expansion
-            debugWebServer?.logSetupEvent(
-                eventType = "AI_PLAYSTYLE_EXPANDED",
-                category = "AI_CALL",
-                text = "User goal: \"$userGoal\" -> Expanded: ${expanded.trim().take(150)}...",
-                importance = "HIGH"
-            )
-
-            expanded.trim()
-        } finally {
-            clearLoading(loadingJob)
-            if (!debugMode) LoadingAnimation.beep()
-        }
-    }
 
     private suspend fun refineBackstory(name: String, currentBackstory: String, userPrompt: String): String {
         out()

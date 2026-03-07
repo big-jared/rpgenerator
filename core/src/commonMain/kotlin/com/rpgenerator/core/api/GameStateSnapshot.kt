@@ -14,7 +14,16 @@ data class GameStateSnapshot(
     val inventory: List<Item>,
     val activeQuests: List<Quest>,
     val npcsAtLocation: List<NPCInfo> = emptyList(),
+    val skills: List<SkillInfo> = emptyList(),
     val recentEvents: List<GameEvent>
+)
+
+@Serializable
+data class SkillInfo(
+    val id: String,
+    val name: String,
+    val level: Int,
+    val isActive: Boolean
 )
 
 /**
@@ -40,7 +49,8 @@ data class PlayerStats(
     val maxHealth: Int,
     val energy: Int,
     val maxEnergy: Int,
-    val backstory: String = ""
+    val backstory: String = "",
+    val playerClass: String = ""
 )
 
 @Serializable

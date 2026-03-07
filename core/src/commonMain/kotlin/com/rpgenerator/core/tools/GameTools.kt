@@ -23,7 +23,7 @@ internal interface GameTools {
         limit: Int = 20
     ): List<EventMetadata>
 
-    fun analyzeIntent(
+    suspend fun analyzeIntent(
         input: String,
         state: GameState,
         recentEvents: List<GameEvent>

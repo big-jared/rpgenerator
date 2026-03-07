@@ -7,6 +7,7 @@ import com.rpgenerator.core.domain.*
 import com.rpgenerator.core.persistence.GameDatabase
 import com.rpgenerator.core.persistence.GameRepository
 import com.rpgenerator.core.persistence.PlotGraphRepository
+import com.rpgenerator.core.story.WorldSeeds
 import com.rpgenerator.core.util.randomUUID
 
 /**
@@ -111,17 +112,41 @@ internal class RPGClientImpl(
         val worldSettings = config.worldSettings
             ?: com.rpgenerator.core.generation.WorldGenerator(null).getDefaultWorld(config.systemType)
 
-        // Get starting location based on system type
-        val startingLocation = getStartingLocation(config.systemType)
+        // Get starting location based on seed or system type
+        val seed = config.seedId?.let { WorldSeeds.byId(it) }
+        val startingLocation = if (seed != null) {
+            getStartingLocationFromSeed(seed)
+        } else {
+            getStartingLocation(config.systemType)
+        }
 
         return GameState(
             gameId = gameId,
             systemType = config.systemType,
             worldSettings = worldSettings,
+            seedId = config.seedId,
             characterSheet = characterSheet,
             currentLocation = startingLocation,
             playerName = config.characterCreation.name,
             backstory = backstory
+        )
+    }
+
+    /**
+     * Create a starting location from a WorldSeed's starting location definition.
+     */
+    private fun getStartingLocationFromSeed(seed: com.rpgenerator.core.story.WorldSeed): Location {
+        val start = seed.startingLocation
+        return Location(
+            id = "seed_start_${seed.id}",
+            name = start.name,
+            zoneId = seed.id,
+            biome = Biome.TUTORIAL_ZONE,
+            description = start.description,
+            danger = if (start.dangers.isNotEmpty()) 2 else 1,
+            connections = emptyList(),
+            features = start.features,
+            lore = "World: ${seed.name}"
         )
     }
 

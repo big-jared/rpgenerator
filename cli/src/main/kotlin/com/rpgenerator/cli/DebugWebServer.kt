@@ -2214,8 +2214,8 @@ class DebugWebServer(
         document.getElementById('log-search').addEventListener('keypress', e => { if (e.key === 'Enter') loadLogs(); });
         document.getElementById('sql-query').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') executeQuery(); });
 
-        // TTS functionality
-        let ttsEnabled = localStorage.getItem('ttsEnabled') === 'true';
+        // TTS functionality - default ON for new users
+        let ttsEnabled = localStorage.getItem('ttsEnabled') !== 'false';
         let ttsVoice = localStorage.getItem('ttsVoice') || 'en-US-GuyNeural';
         const ttsQueue = [];
         let ttsPlaying = false;
@@ -2284,7 +2284,7 @@ class DebugWebServer(
         }
 
         async function speakText(text) {
-            if (!ttsEnabled || ttsCancelled || !text || text.trim().length < 50) return;
+            if (!ttsEnabled || ttsCancelled || !text || text.trim().length < 30) return;
 
             // Clean text first
             const cleanText = text
@@ -2293,7 +2293,7 @@ class DebugWebServer(
                 .replace(/\*([^*]+)\*/g, '$1') // Remove markdown italic
                 .replace(/`([^`]+)`/g, '$1') // Remove inline code
                 .replace(/={3,}/g, '') // Remove separator lines
-                .replace(/\[.*?\]/g, '') // Remove bracketed text
+                .replace(/\[([A-Z][A-Z_]*\s[A-Z\s_:]+)\]/g, '') // Only remove MULTI-WORD CAPS like [LEVEL UP] [SYSTEM INTEGRATION] - keep single words like [WARRIOR]
                 .replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2300}-\u{23FF}]|[\u{2B50}]|[\u{1FA00}-\u{1FAFF}]|[\u{FE00}-\u{FE0F}]|[\u{200D}]/gu, '') // Remove emojis
                 .replace(/[ℹ️🔍⚔️🛡️💰📜⭐🎯✨🌟💫⚡🔥❄️💧🌿🎭🎪]/g, '') // Remove common game icons
                 .trim();
@@ -2327,16 +2327,41 @@ class DebugWebServer(
                 return;
             }
 
-            // Must look like narrative prose (has sentences with periods or story content)
-            const hasSentences = cleanText.includes('. ') || cleanText.endsWith('.');
-            const hasNarrativeLength = cleanText.length > 100;
+            // Must look like narrative prose (has sentences) OR be action options
+            const hasSentences = cleanText.includes('. ') || cleanText.endsWith('.') || cleanText.endsWith('?');
+            const hasActionOptions = cleanText.includes('>') || cleanText.match(/^\d+\./m);
+            const hasNarrativeLength = cleanText.length > 50;
 
-            if (!hasSentences && !hasNarrativeLength) return;
+            if (!hasSentences && !hasActionOptions && !hasNarrativeLength) return;
             if (cleanText === lastSpokenText) return;
 
             lastSpokenText = cleanText;
             ttsQueue.push(cleanText);
             processQueue();
+        }
+
+        // Pre-fetch cache for faster playback
+        const audioCache = new Map();
+        let prefetchInProgress = false;
+
+        async function prefetchNext() {
+            if (prefetchInProgress || ttsQueue.length === 0) return;
+            const nextText = ttsQueue[0];
+            if (audioCache.has(nextText)) return;
+
+            prefetchInProgress = true;
+            try {
+                const response = await fetch('/api/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: nextText, voice: ttsVoice })
+                });
+                if (response.ok) {
+                    const blob = await response.blob();
+                    audioCache.set(nextText, URL.createObjectURL(blob));
+                }
+            } catch (e) { }
+            prefetchInProgress = false;
         }
 
         async function processQueue() {
@@ -2348,15 +2373,26 @@ class DebugWebServer(
             try {
                 document.getElementById('tts-toggle').classList.add('tts-speaking');
 
-                const response = await fetch('/api/tts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: text, voice: ttsVoice })
-                });
+                let url = audioCache.get(text);
+                if (!url) {
+                    // Not in cache, fetch now
+                    const response = await fetch('/api/tts', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: text, voice: ttsVoice })
+                    });
 
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = URL.createObjectURL(blob);
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        url = URL.createObjectURL(blob);
+                    }
+                } else {
+                    audioCache.delete(text); // Clear from cache after use
+                }
+
+                if (url) {
+                    // Start prefetching next item while this plays
+                    prefetchNext();
                     ttsAudio.src = url;
 
                     ttsAudio.onended = () => {

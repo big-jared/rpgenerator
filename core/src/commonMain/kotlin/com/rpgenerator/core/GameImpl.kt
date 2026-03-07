@@ -6,6 +6,7 @@ import com.rpgenerator.core.orchestration.GameOrchestrator
 import com.rpgenerator.core.persistence.GameDatabase
 import com.rpgenerator.core.persistence.GameRepository
 import com.rpgenerator.core.persistence.PlotGraphRepository
+import com.rpgenerator.core.story.StoryFoundation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
 import com.rpgenerator.core.util.currentTimeMillis
@@ -65,7 +66,8 @@ internal class GameImpl(
                 maxHealth = state.characterSheet.resources.maxHP,
                 energy = state.characterSheet.resources.currentEnergy,
                 maxEnergy = state.characterSheet.resources.maxEnergy,
-                backstory = state.backstory
+                backstory = state.backstory,
+                playerClass = if (state.characterSheet.playerClass == com.rpgenerator.core.domain.PlayerClass.NONE) "" else state.characterSheet.playerClass.displayName
             ),
             location = state.currentLocation.name,
             currentScene = state.currentLocation.description,
@@ -75,7 +77,7 @@ internal class GameImpl(
                     name = item.name,
                     description = item.description,
                     quantity = item.quantity,
-                    rarity = ItemRarity.COMMON // TODO: Add rarity to InventoryItem
+                    rarity = item.rarity
                 )
             },
             activeQuests = state.activeQuests.values.map { quest ->
@@ -99,6 +101,14 @@ internal class GameImpl(
                     archetype = npc.archetype.name.replace("_", " "),
                     disposition = npc.personality.traits.firstOrNull() ?: "neutral",
                     description = npc.lore.ifEmpty { npc.personality.motivations.joinToString(". ") }
+                )
+            },
+            skills = state.characterSheet.skills.map { skill ->
+                SkillInfo(
+                    id = skill.id,
+                    name = skill.name,
+                    level = skill.level,
+                    isActive = skill.isActive
                 )
             },
             recentEvents = recentEvents
@@ -144,5 +154,49 @@ internal class GameImpl(
      */
     internal fun getCurrentState(): GameState {
         return orchestrator.getState()
+    }
+
+    override fun getEventLog(): List<GameEvent> {
+        return orchestrator.getEventLog()
+    }
+
+    override fun getDebugState(): Map<String, String> {
+        val state = orchestrator.getState()
+        val foundation = orchestrator.getStoryFoundation()
+        val result = mutableMapOf<String, String>()
+
+        result["playerName"] = state.playerName
+        result["playerLevel"] = state.playerLevel.toString()
+        result["playerClass"] = state.characterSheet.playerClass.name
+        result["currentLocation"] = state.currentLocation.name
+        result["locationDescription"] = state.currentLocation.description
+        result["activeQuestCount"] = state.activeQuests.size.toString()
+        result["npcCount"] = state.getNPCsAtCurrentLocation().size.toString()
+        result["eventLogSize"] = orchestrator.getEventLog().size.toString()
+        result["systemType"] = state.systemType.name
+        result["seedId"] = state.seedId ?: "none"
+        result["backstory"] = state.backstory ?: "none"
+
+        if (foundation != null) {
+            result["storyFoundation.systemName"] = foundation.systemDefinition.systemName
+            result["storyFoundation.centralMystery"] = foundation.systemDefinition.centralMystery
+            result["storyFoundation.primaryThreat"] = foundation.systemDefinition.primaryThreat
+            result["storyFoundation.plotThreadCount"] = foundation.plotThreads.size.toString()
+            result["storyFoundation.foreshadowingCount"] = foundation.initialForeshadowing.size.toString()
+
+            // Narrator context
+            result["narratorContext.systemName"] = foundation.narratorContext.systemName
+            result["narratorContext.systemPersonality"] = foundation.narratorContext.systemPersonality
+            result["narratorContext.thematicCore"] = foundation.narratorContext.thematicCore
+            result["narratorContext.activeThreads"] = foundation.narratorContext.activeThreads.joinToString("; ")
+            result["narratorContext.upcomingBeats"] = foundation.narratorContext.upcomingBeats.joinToString("; ")
+            result["narratorContext.currentForeshadowing"] = foundation.narratorContext.currentForeshadowing.joinToString("; ")
+        }
+
+        return result
+    }
+
+    internal fun getStoryFoundation(): StoryFoundation? {
+        return orchestrator.getStoryFoundation()
     }
 }

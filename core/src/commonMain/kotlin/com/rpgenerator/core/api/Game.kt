@@ -29,4 +29,19 @@ abstract class Game internal constructor(
      * Save current game state to persistent storage.
      */
     abstract suspend fun save()
+
+    // ── Debug introspection ──────────────────────────────────────────
+
+    /**
+     * Get the full event log for this session.
+     * Returns all GameEvents fired in order.
+     */
+    open fun getEventLog(): List<GameEvent> = emptyList()
+
+    /**
+     * Get debug snapshot of internal game state.
+     * Returns a map of key-value pairs describing internal state
+     * beyond what getState() exposes (e.g. narrator context, story foundation).
+     */
+    open fun getDebugState(): Map<String, String> = emptyMap()
 }

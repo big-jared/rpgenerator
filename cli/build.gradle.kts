@@ -23,6 +23,9 @@ dependencies {
     implementation("io.ktor:ktor-server-netty:3.0.3")
     implementation("io.ktor:ktor-server-html-builder:3.0.3")
     implementation("io.ktor:ktor-server-websockets:3.0.3")
+
+    // Google Gemini SDK (Live API, function calling)
+    implementation("com.google.genai:google-genai:1.41.0")
 }
 
 application {

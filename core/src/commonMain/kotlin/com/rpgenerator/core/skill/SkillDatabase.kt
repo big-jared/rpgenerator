@@ -706,25 +706,49 @@ internal object SkillDatabase {
     // CLASS STARTER SKILLS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    val classStarterSkills: Map<String, List<String>> = mapOf(
-        "warrior" to listOf("power_strike", "iron_skin"),
-        "mage" to listOf("fireball", "mana_shield"),
-        "rogue" to listOf("quick_slash", "evasion"),
-        "ranger" to listOf("precision_shot", "evasion"),
-        "cultivator" to listOf("qi_strike", "inner_focus"),
-        "paladin" to listOf("power_strike", "minor_heal"),
-        "assassin" to listOf("shadow_strike", "poison_blade"),
-        "elementalist" to listOf("fireball", "frost_bolt")
-    )
-
     /**
      * Get starting skills for a class.
+     * Note: Starter skills are now generated dynamically by the AI during class selection,
+     * not hardcoded. This method returns empty - skills are granted via the narrative system.
      */
-    fun getStarterSkills(className: String): List<Skill> {
-        val skillIds = classStarterSkills[className.lowercase()] ?: return emptyList()
-        return skillIds.mapNotNull { id ->
-            getSkillWithSource(id, AcquisitionSource.ClassStarter(className))
+    fun getStarterSkills(className: String): List<Skill> = emptyList()
+
+    /**
+     * Create a dynamically generated skill (used by AI skill generation).
+     */
+    fun createGeneratedSkill(
+        name: String,
+        description: String,
+        className: String,
+        isActive: Boolean = true,
+        manaCost: Int = 10,
+        energyCost: Int = 0,
+        baseCooldown: Int = 2,
+        damageAmount: Int = 15,
+        targetType: TargetType = TargetType.SINGLE_ENEMY
+    ): Skill {
+        val id = "gen_${name.lowercase().replace(" ", "_")}_${System.currentTimeMillis()}"
+
+        val effects = if (isActive && damageAmount > 0) {
+            listOf(SkillEffect.Damage(baseAmount = damageAmount, scalingStat = StatType.STRENGTH, scalingRatio = 0.5))
+        } else {
+            emptyList()
         }
+
+        return Skill(
+            id = id,
+            name = name,
+            description = description,
+            rarity = SkillRarity.COMMON,
+            manaCost = manaCost,
+            energyCost = energyCost,
+            baseCooldown = baseCooldown,
+            effects = effects,
+            isActive = isActive,
+            targetType = targetType,
+            acquisitionSource = AcquisitionSource.ClassStarter(className),
+            category = SkillCategory.COMBAT
+        )
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

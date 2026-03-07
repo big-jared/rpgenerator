@@ -27,11 +27,41 @@ class MockAgentStream(
                 val intent = intentOverride ?: detectIntent(message)
                 flowOf("""{"intent": "$intent", "target": "test-target", "context": "Test context"}""")
             }
-            message.contains("Narrate") -> {
+            message.contains("PLAN THIS SCENE") -> {
+                // GameMaster scene planning — return valid ScenePlan JSON
+                val actionType = detectActionType(message)
+                val target = when (actionType) {
+                    "COMBAT" -> "goblin"
+                    "DIALOGUE" -> extractNPCTarget(message)
+                    else -> null
+                }
+                flowOf("""
+                {
+                    "primaryAction": {
+                        "type": "$actionType",
+                        "target": ${if (target != null) "\"$target\"" else "null"},
+                        "description": "Player performs $actionType action",
+                        "narrativeContext": "The scene unfolds"
+                    },
+                    "npcReactions": [],
+                    "environmentalEffects": [],
+                    "narrativeBeats": [],
+                    "suggestedActions": [
+                        {"action": "Continue", "type": "EXPLORATION", "riskLevel": "SAFE", "context": "Keep going"}
+                    ],
+                    "sceneTone": "TENSE",
+                    "triggeredEvents": []
+                }
+                """.trimIndent())
+            }
+            message.contains("Classify this player input") -> {
+                val intent = intentOverride ?: detectIntentFromClassification(message)
+                flowOf(intent)
+            }
+            message.contains("RENDER THIS SCENE") || message.contains("Narrate") || message.contains("COMBAT RESULT") -> {
                 flowOf("Your blade strikes true, cutting deep into the goblin's flesh.")
             }
             message.contains("Generate a new location") -> {
-                // Mock location generation response
                 flowOf("""
                 {
                     "name": "Hidden Cave",
@@ -44,13 +74,60 @@ class MockAgentStream(
                 """.trimIndent())
             }
             message.contains("NPC Profile:") -> {
-                // NPC dialogue response
                 generateNPCDialogue(message)
             }
             else -> {
-                flowOf("Unknown response")
+                flowOf("Mock response for: ${message.take(50)}")
             }
         }
+    }
+
+    private fun detectActionType(message: String): String {
+        // Extract just the player input from the GM prompt to avoid matching
+        // keywords in the JSON schema example (e.g., "COMBAT|EXPLORATION|...")
+        val playerInput = Regex("""Player Input:\s*"([^"]+)"""").find(message)
+            ?.groupValues?.get(1)?.lowercase() ?: message.lowercase()
+        return when {
+            playerInput.contains("attack") || playerInput.contains("fight") || playerInput.contains("combat") -> "COMBAT"
+            playerInput.contains("talk") || playerInput.contains("speak") || playerInput.contains("thank") || playerInput.contains("greet") -> "DIALOGUE"
+            playerInput.contains("move") || playerInput.contains("go to") || playerInput.contains("travel") -> "MOVEMENT"
+            else -> "EXPLORATION"
+        }
+    }
+
+    private fun extractNPCTarget(message: String): String? {
+        // Try to find NPC names from the "NPCs Present:" section of the GM prompt
+        val npcSection = message.substringAfter("NPCs Present:", "")
+        if (npcSection.isBlank()) return null
+        // Look for "- Name (Archetype)" pattern
+        val nameMatch = Regex("""- (\w+) \(""").find(npcSection)
+        return nameMatch?.groupValues?.get(1)
+    }
+
+    private fun detectIntentFromClassification(message: String): String {
+        // Extract player input from the classification prompt
+        val playerInput = Regex("""Player input:\s*"([^"]+)"""").find(message)
+            ?.groupValues?.get(1)?.lowercase() ?: message.lowercase()
+        val words = playerInput.split("\\s+".toRegex())
+        fun hasWord(w: String) = words.any { it == w || it == "${w}s" || it == "${w}ed" }
+        val intent = when {
+            playerInput.contains("skill") && (playerInput.contains("show") || playerInput.contains("list") || playerInput.contains("my") || playerInput.contains("view")) -> "SKILL_MENU"
+            hasWord("attack") || hasWord("fight") || hasWord("kill") -> "COMBAT"
+            playerInput.contains("talk") || playerInput.contains("speak") || hasWord("ask") -> "NPC_DIALOGUE"
+            playerInput.contains("class") || playerInput.contains("choose") -> "CLASS_SELECTION"
+            playerInput.contains("quest") -> "QUEST_ACTION"
+            playerInput.contains("stats") || playerInput.contains("status") -> "SYSTEM_QUERY"
+            playerInput.contains("inventory") || playerInput.contains("bag") || playerInput.contains("items") -> "INVENTORY_MENU"
+            playerInput.contains("search") || playerInput.contains("explore") -> "EXPLORATION"
+            else -> "EXPLORATION"
+        }
+        val target = when (intent) {
+            "COMBAT" -> Regex("""(?:attack|fight|kill)\s+(?:the\s+)?(\w+)""").find(playerInput)?.groupValues?.get(1) ?: "unknown enemy"
+            "NPC_DIALOGUE" -> Regex("""(?:talk|speak|ask)\s+(?:to\s+)?(?:the\s+)?(\w+)""").find(playerInput)?.groupValues?.get(1) ?: "unknown npc"
+            else -> "NONE"
+        }
+        val shouldGen = if (intent == "EXPLORATION" && (playerInput.contains("search") || playerInput.contains("explore"))) "true" else "false"
+        return "INTENT: $intent\nTARGET: $target\nREASONING: Mock classification\nSHOULD_GENERATE_LOCATION: $shouldGen"
     }
 
     private fun detectIntent(message: String): String {

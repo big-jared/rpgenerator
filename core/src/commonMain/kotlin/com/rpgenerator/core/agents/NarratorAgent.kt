@@ -8,36 +8,25 @@ import com.rpgenerator.core.rules.CombatOutcome
 import com.rpgenerator.core.story.NarratorContext
 import kotlinx.coroutines.flow.toList
 
-internal class NarratorAgent(private val llm: LLMInterface) {
+internal class NarratorAgent(private val llm: LLMInterface, customPrompt: String? = null) {
 
     private val agentStream = llm.startAgent(
-        """
-        You are the NARRATOR — the voice that brings this LitRPG world to life.
+        customPrompt ?: """
+        You are the NARRATOR of a LitRPG world. Second person, present tense. Always.
 
-        YOUR VOICE:
-        - Second person, present tense. Always. ("You step forward" not "The player steps forward")
-        - Punchy and visceral. Every sentence earns its place.
-        - Show, don't tell. "Blood drips from your blade" not "You successfully attacked"
-        - Match the genre's tone — grim for death loops, mystical for cultivation, tactical for dungeons
+        STYLE:
+        - Simple, clear prose. Short sentences. Vary rhythm.
+        - Show, don't tell. One sharp sensory detail per beat.
+        - 2-3 sentences per response unless the moment demands more.
+        - No purple prose. No stacking adjectives. No em-dash abuse.
+        - Let moments breathe. Silence and space have power.
 
-        STRUCTURE (every response):
-        1. NARRATION: 2-4 sentences of vivid, specific description
-           - Ground the moment in sensory detail (sounds, smells, textures, pain)
-           - React to what the player did — don't just describe the scene
-           - End on momentum — something happening, changing, demanding response
-
-        2. ACTION OPTIONS: 3-4 concrete next steps
-           - Format: > [specific action]
-           - Be specific: "> Examine the bloodstained altar" not "> Look around"
-           - Include what's actually possible: NPCs to talk to, paths to take, things to interact with
-           - Mix safe and risky options when appropriate
-
-        AVOID:
-        - "You find yourself..." or "You wake up..." openings
-        - Passive voice
-        - Explaining game mechanics directly ("You gained 50 XP")
-        - Generic descriptions that could apply anywhere
-        - Walls of text — brevity is power
+        NEVER:
+        - Start with "You find yourself..." or "You wake up..."
+        - Explain game mechanics in prose ("You gained 50 XP")
+        - Narrate the player's emotions for them ("You feel a surge of...")
+        - Repeat backstory details the player already knows
+        - End with a bulleted list of action options
         """.trimIndent()
     )
 
@@ -92,71 +81,34 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         // Build mechanical results section
         val mechanicalResults = buildMechanicalResultsText(results)
 
-        // Build suggested actions
-        val suggestedActionsText = plan.suggestedActions.joinToString("\n") { action ->
-            val riskIndicator = when (action.riskLevel) {
-                RiskLevel.DANGEROUS -> "[!!! DANGEROUS]"
-                RiskLevel.RISKY -> "[! RISKY]"
-                RiskLevel.MODERATE -> ""
-                RiskLevel.SAFE -> "[safe]"
-            }
-            "> ${action.action} $riskIndicator"
-        }
-
         // Build quest context for the narrator
         val questContext = buildQuestContext(state)
 
         val prompt = """
-            RENDER THIS SCENE into vivid, cohesive prose.
-
-            $genreGuidance
+            Narrate this scene. $genreGuidance
             $storyContext
 
-            PLAYER ACTION: "$playerInput"
-            SCENE TONE: ${plan.sceneTone}
+            Player action: "$playerInput"
+            Tone: ${plan.sceneTone}
 
-            === CURRENT QUEST PROGRESS ===
-            $questContext
+            What happens: ${plan.primaryAction.type} — ${plan.primaryAction.narrativeContext}
+            ${if (plan.primaryAction.target != null) "Target: ${plan.primaryAction.target}" else ""}
 
-            IMPORTANT: Guide the player toward their NEXT INCOMPLETE objective. If they seem stuck or
-            confused, the NPC guide should offer direction. Don't repeat completed objectives.
+            Mechanical results: $mechanicalResults
 
-            === WHAT HAPPENS ===
-            Primary Action: ${plan.primaryAction.type}
-            Target: ${plan.primaryAction.target ?: "N/A"}
-            Context: ${plan.primaryAction.narrativeContext}
+            ${if (npcReactionsText != "None") "NPC reactions: $npcReactionsText" else ""}
+            ${if (narrativeBeatsText != "None specified") "Story beats: $narrativeBeatsText" else ""}
 
-            === MECHANICAL RESULTS ===
-            $mechanicalResults
+            Quest context: $questContext
 
-            === NPC REACTIONS (weave these in naturally) ===
-            $npcReactionsText
-
-            === ENVIRONMENTAL EFFECTS ===
-            ${plan.environmentalEffects.joinToString(", ").ifEmpty { "None" }}
-
-            === NARRATIVE BEATS TO INCLUDE ===
-            $narrativeBeatsText
-
-            === TRIGGERED EVENTS ===
-            ${plan.triggeredEvents.joinToString("\n") { "${it.eventType}: ${it.description} (${it.timing})" }.ifEmpty { "None" }}
-
-            ---
-
-            WRITE THE SCENE:
-            1. 3-5 sentences of vivid narration that:
-               - Shows the action happening (not tells)
-               - Weaves in NPC reactions at the right moments (BEFORE/DURING/AFTER)
-               - Includes at least one sensory detail
-               - Incorporates the narrative beats naturally (don't force them)
-               - Matches the ${plan.sceneTone} tone
-
-            2. If NPCs speak, use their exact dialogue in quotes, attributed naturally.
-
-            3. End with ACTION OPTIONS that help the player progress toward their NEXT objective:
-            $suggestedActionsText
-
-            Second person, present tense. Make it feel like one unified moment, not a list of things.
+            RULES:
+            - 2-4 sentences. Simple, clear prose. No walls of text.
+            - ONLY describe items/loot listed in mechanical results. Do NOT invent items.
+            - If damageReceived is 0, the player takes NO damage. Do NOT describe the player being hit.
+            - If the enemy is defeated, it does NOT counter-attack after dying.
+            - Match mechanical results exactly.
+            - Do NOT end with a bulleted list of action options. End on momentum — the world moving, something demanding response.
+            - Second person, present tense.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -394,69 +346,30 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         } else ""
 
         val prompt = """
-            You are writing the opening hook—the first thing players read. Make it unforgettable.
-            This is ${state.playerName}'s origin moment. Ground it in WHO THEY WERE before everything changed.
+            Write the opening scene. This is ${state.playerName}'s origin moment.
 
-            === THE CHARACTER ===
-            Name: ${state.playerName}
+            Character: ${state.playerName}
             Backstory: ${state.backstory}
 
-            IMPORTANT: The backstory is CRITICAL. This opening should:
-            - Reference something specific from their past (a skill, a memory, a relationship, their profession)
-            - Show how their old life connects to or contrasts with this new reality
-            - Make the reader feel they're stepping into a SPECIFIC person's shoes, not a blank avatar
-
-            === THE MOMENT ===
             Location: ${state.currentLocation.name}
             ${state.currentLocation.description}
-            Features: ${state.currentLocation.features.joinToString(", ")}
             ${npcContext}
 
             $storyContext
-
-            === TUTORIAL OBJECTIVES ===
-            $questContext
-
-            The opening should hint at what the player needs to accomplish. The action options at the end
-            should guide them toward their FIRST objective (likely defeating a training construct or
-            speaking with the tutorial guide).
-
             $genreGuidance
 
-            === WRITE THE OPENING ===
-            This is the HOOK. Make it SUBSTANTIAL - 4 full paragraphs minimum.
+            STRUCTURE:
+            1. Start in the old world — one specific moment from their backstory. Then reality breaks.
+            2. The aftermath — new sensations, the wrongness, their old instincts reacting.
+            3. Where they are now — ground them in this place.
+            ${if (npcContext.isNotEmpty()) "4. The guide appears — who they are, what they say." else ""}
 
-            PARAGRAPH 1 - THE BEFORE:
-            Start in the old world. What was ${state.playerName} doing moments before everything changed?
-            Use their backstory. Were they at work? With family? Show a specific, grounded moment.
-            Then the Integration hits - describe that visceral, reality-breaking moment of transition.
-
-            PARAGRAPH 2 - THE SENSORY ASSAULT:
-            The immediate aftermath. Pain, confusion, alien sensations flooding their body.
-            Blue screens flickering at the edge of vision. The taste of copper and ozone.
-            The wrongness of suddenly having a body that obeys different rules.
-            Reference their backstory - how do their old instincts or training react to this?
-
-            PARAGRAPH 3 - THE NEW WORLD:
-            Ground them in the Tutorial Zone. Describe it in vivid, specific detail.
-            The too-perfect geometry. The sterile calm that feels wrong. The training constructs waiting.
-            The System Terminal pulsing with information. Other Integration survivors? Or alone?
-            Build atmosphere - this place exists between worlds, designed to teach or to break.
-
-            PARAGRAPH 4 - THE TUTORIAL GUIDE APPEARS:
-            If an NPC guide is present, they materialize. Describe their appearance, their manner.
-            Their first words should orient the player: where they are, what happened, what comes next.
-            End on the first tutorial objective - what must they do to survive?
-            Create urgency without panic. The tutorial is a crucible, not a vacation.
-
-            Then list 3-4 ACTION OPTIONS that guide toward the first tutorial objective:
-            Format each as: > [action]
-            - Include at least one option that leads toward combat training
-            - Include at least one option to interact with the tutorial guide (if present)
-            - Make the options feel natural to the scene, not like a menu
-
-            Second person, present tense. No preamble. Dive straight into ${state.playerName}'s perspective.
-            AIM FOR 300-400 WORDS before the action options.
+            RULES:
+            - 150-200 words total. Simple, clear prose. No purple prose.
+            - One sensory detail per paragraph. No stacking adjectives.
+            - Reference the backstory once, specifically — don't keep hammering it.
+            - Do NOT end with a bulleted list of action options. End on momentum.
+            - Second person, present tense. Dive straight in.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -473,26 +386,21 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         } else ""
 
         val prompt = """
-            COMBAT RESULT - narrate this moment.
+            Narrate this combat result in 1-2 sentences.
 
-            Setting: ${state.systemType} - ${state.currentLocation.name}
-            Player action: "$input"
-            Target: $target
+            Setting: ${state.currentLocation.name}
+            Action: "$input" → Target: $target
             Damage dealt: ${outcome.damage}
-            ${if (outcome.levelUp) "LEVEL UP! Now level ${outcome.newLevel}" else ""}
+            ${if (outcome.levelUp) "LEVEL UP to ${outcome.newLevel}!" else ""}
             ${lootContext}
-            ${if (outcome.gold > 0) "Gold found: ${outcome.gold}" else ""}
+            ${if (outcome.gold > 0) "Gold: ${outcome.gold}" else ""}
 
-            WRITE 1-2 visceral sentences. Make the hit feel real—bone crack, blade sing, blood spray.
-            ${if (outcome.levelUp) "Weave in the rush of power from leveling up." else ""}
-
-            Then list 2-3 ACTION OPTIONS. What can they do now? Examples:
-            - Loot the corpse
-            - Press deeper into the dungeon
-            - Bandage wounds
-            - Search for more enemies
-
-            Format each as: > [action]
+            RULES:
+            - The player wins cleanly. Do NOT describe the enemy hitting the player.
+            - ONLY mention loot listed above. Do NOT invent items.
+            - The enemy is dead — no counter-attacks after death.
+            - Do NOT end with action options. End on the moment.
+            ${if (outcome.levelUp) "- Weave in the level-up sensation." else ""}
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -528,18 +436,9 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         }
 
         val prompt = """
-            DEATH - narrate the fall of ${state.playerName}.
-
-            Character: ${state.playerName} (Level ${state.playerLevel})
-            Cause: $cause
-            Location: ${state.currentLocation.name}
-
+            ${state.playerName} (Level ${state.playerLevel}) dies. Cause: $cause. Location: ${state.currentLocation.name}.
             $toneGuidance
-
-            WRITE 1-2 sentences. Make it hit hard. The moment of failure, the final breath, the darkness closing in.
-
-            Then show these ACTION OPTIONS:
-            $nextSteps
+            1-2 sentences. The moment of failure. No action options.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -552,21 +451,12 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         val npcsHere = state.getNPCsAtCurrentLocation()
 
         val prompt = """
-            RESPAWN - ${state.playerName} returns from death.
-
-            Location: ${state.currentLocation.name}
-            Death Count: ${state.deathCount}
-            ${if (npcsHere.isNotEmpty()) "NPCs here: ${npcsHere.joinToString(", ") { it.name }}" else ""}
-
+            ${state.playerName} respawns at ${state.currentLocation.name}. Death count: ${state.deathCount}.
             ${if (state.systemType == com.rpgenerator.core.api.SystemType.DEATH_LOOP)
-                "Each death has made you stronger. You remember what killed you. You won't make that mistake again."
+                "Each death makes them stronger. They remember what killed them."
             else
-                "You've returned, slightly diminished but alive."}
-
-            WRITE 1-2 sentences. The disorientation of return, the taste of resurrection, the grim resolve to continue.
-
-            Then list 2-3 ACTION OPTIONS. What now?
-            Format each as: > [action]
+                "They return, diminished but alive."}
+            1-2 sentences. No action options.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -588,29 +478,16 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         }
 
         val prompt = """
-            EXPLORATION - respond to the player's action.
-
-            LOCATION:
-            - Name: ${state.currentLocation.name}
-            - Description: ${state.currentLocation.description}
-            - Features: ${state.currentLocation.features.joinToString(", ")}
-            - Threat Level: $dangerLevel
-            ${if (npcsHere.isNotEmpty()) "- NPCs present: ${npcsHere.joinToString(", ") { "${it.name} (${it.archetype})" }}" else ""}
-            ${if (connectedLocations.isNotEmpty()) "- Paths lead to: ${connectedLocations.joinToString(", ") { it.name }}" else ""}
-
             Player action: "$input"
 
-            WRITE 1-2 vivid sentences describing what they discover or experience.
-            Be specific to their action—don't just describe the area, describe what happens when they do the thing.
+            Location: ${state.currentLocation.name} — ${state.currentLocation.description}
+            Features: ${state.currentLocation.features.joinToString(", ")}
+            Threat: $dangerLevel
+            ${if (npcsHere.isNotEmpty()) "NPCs here: ${npcsHere.joinToString(", ") { "${it.name} (${it.archetype})" }}" else ""}
+            ${if (connectedLocations.isNotEmpty()) "Paths to: ${connectedLocations.joinToString(", ") { it.name }}" else ""}
 
-            Then list 3-4 ACTION OPTIONS based on what's actually here:
-            ${if (connectedLocations.isNotEmpty()) "- Travel options (paths to other locations)" else ""}
-            ${if (npcsHere.isNotEmpty()) "- NPC interactions (talk to, trade with, observe)" else ""}
-            - Things to examine or interact with (based on features)
-            - Combat or stealth options (if danger is present)
-
-            Format each as: > [specific action]
-            Make actions concrete, not generic. "> Examine the glowing runes" not "> Look around"
+            1-2 sentences. Describe what happens when they do the thing, not the area.
+            Do NOT end with action options. End on something the player can react to.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -626,23 +503,13 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         val npcsHere = state.getNPCsAtCurrentLocation()
         val guide = npcsHere.firstOrNull()
 
+        val classDetails = availableClasses.joinToString("\n") { "- ${it.displayName}: ${it.description}" }
+
         val prompt = """
-            CLASS SELECTION - A pivotal moment in ${state.playerName}'s journey.
-
-            The System is offering them a choice that will shape everything that follows.
-            Available paths: ${availableClasses.joinToString(", ") { it.displayName }}
-
-            ${if (guide != null) "The tutorial guide ${guide.name} is present to advise them." else ""}
-
-            WRITE 2-3 sentences:
-            - The gravity of this moment - this choice defines who they become
-            - ${if (guide != null) "What ${guide.name} might say to help them choose" else "The System's cold presentation of options"}
-            - The pull they might feel toward different paths based on their backstory
-
-            Player backstory: ${state.backstory}
-
-            Make this feel like a genuine crossroads, not a menu selection.
-            No action options needed - the player will type their class choice.
+            The System presents class options to ${state.playerName}.
+            ${if (guide != null) "${guide.name} watches." else ""}
+            1-2 sentences. The weight of the choice. Do NOT list or describe classes — the system shows them separately.
+            Do NOT invent class names. Do NOT narrate emotions for the player.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")
@@ -659,23 +526,12 @@ internal class NarratorAgent(private val llm: LLMInterface) {
         val guide = npcsHere.firstOrNull()
 
         val prompt = """
-            CLASS ACQUIRED - ${state.playerName} has chosen the path of the ${chosenClass.displayName}.
+            ${state.playerName} becomes a ${chosenClass.displayName}. ${chosenClass.description}
+            ${if (guide != null) "${guide.name} witnesses it." else ""}
+            Backstory: ${state.backstory}
 
-            ${chosenClass.description}
-
-            ${if (guide != null) "The tutorial guide ${guide.name} witnesses this transformation." else ""}
-
-            WRITE 3-4 sentences describing:
-            - The physical/spiritual transformation as the class takes hold
-            - How it feels - power flooding in, knowledge awakening, potential unlocking
-            - ${if (guide != null) "${guide.name}'s reaction to their choice" else "The System's acknowledgment"}
-            - A hint of what this path offers and demands
-
-            Player backstory: ${state.backstory}
-            Consider how their past life might resonate with this choice.
-
-            Then provide 2-3 ACTION OPTIONS for what comes next in the tutorial:
-            Format each as: > [action]
+            2-3 sentences. The transformation — what it feels like, one specific sensory detail.
+            Connect to their past life briefly. No action options at the end.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")

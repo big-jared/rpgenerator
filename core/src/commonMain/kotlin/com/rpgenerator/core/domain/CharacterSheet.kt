@@ -515,7 +515,8 @@ internal data class InventoryItem(
     val description: String,
     val type: ItemType,
     val quantity: Int = 1,
-    val stackable: Boolean = true
+    val stackable: Boolean = true,
+    val rarity: com.rpgenerator.core.api.ItemRarity = com.rpgenerator.core.api.ItemRarity.COMMON
 )
 
 @Serializable

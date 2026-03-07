@@ -13,8 +13,15 @@ data class GameConfig(
     val playerPreferences: Map<String, String> = emptyMap(),
 
     /**
+     * World seed ID - defines the world's flavor, rules, and starting state.
+     * See WorldSeeds for available options.
+     */
+    val seedId: String? = null,
+
+    /**
      * World settings (lore, factions, narrative structure).
      * If null, a default world will be generated based on systemType.
+     * @deprecated Use seedId instead for new games.
      */
     val worldSettings: WorldSettings? = null
 )

@@ -1,0 +1,19 @@
+name = "rpgenerator-mcp"
+main = "src/index.ts"
+compatibility_date = "2025-04-22"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+BACKEND_URL = "https://rpgenerator-yumkcfwfba-uc.a.run.app"
+GOOGLE_OAUTH_CLIENT_ID = "931553644155-274op5ebrm851j52phlno8r1d66bpfgh.apps.googleusercontent.com"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "b862755c94c54fb78187cf7405cf1a62"
+
+[dev]
+port = 8787

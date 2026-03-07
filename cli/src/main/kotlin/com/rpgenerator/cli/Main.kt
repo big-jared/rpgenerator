@@ -18,6 +18,36 @@ fun main(args: Array<String>) {
         return
     }
 
+    // Gemini Live API test mode — text-based live session for testing
+    if (args.contains("--live")) {
+        GeminiLiveTest.run()
+        return
+    }
+
+    // MCP server mode — JSON-RPC over stdio for AI development loop
+    // Must not print anything to stdout except JSON-RPC messages
+    if (args.contains("--mcp")) {
+        val llm = if (args.contains("--mock")) SimpleLLM() else selectLLM(args)
+        TestHarness(llm).runMCPServer()
+        return
+    }
+
+    // Test harness modes
+    if (args.contains("--test")) {
+        val llm = selectLLM(args)
+        val harness = TestHarness(llm)
+        val testArgs = args.toList().let { list ->
+            val idx = list.indexOf("--test")
+            if (idx + 1 < list.size) list.subList(idx + 1, list.size) else emptyList()
+        }
+        if (testArgs.isEmpty()) {
+            harness.runInteractive()
+        } else {
+            harness.runSingleCommand(testArgs)
+        }
+        return
+    }
+
     // Create data directory for game saves
     val dataDir = File(System.getProperty("user.home"), ".rpgenerator")
     if (!dataDir.exists()) {

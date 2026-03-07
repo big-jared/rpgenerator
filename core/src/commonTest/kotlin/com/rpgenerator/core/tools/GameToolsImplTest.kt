@@ -6,9 +6,7 @@ import com.rpgenerator.core.domain.*
 import com.rpgenerator.core.rules.RulesEngine
 import com.rpgenerator.core.test.MockLLMInterface
 import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.Assertions.*
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
+import kotlin.test.*
 
 class GameToolsImplTest {
 
@@ -18,7 +16,7 @@ class GameToolsImplTest {
     private lateinit var gameTools: GameToolsImpl
     private lateinit var testGameState: GameState
 
-    @BeforeEach
+    @BeforeTest
     fun setup() {
         locationManager = LocationManager().apply {
             loadLocations(SystemType.SYSTEM_INTEGRATION)
@@ -29,7 +27,7 @@ class GameToolsImplTest {
         locationGenerator = LocationGeneratorAgent(mockLLM)
         val questGenerator = com.rpgenerator.core.agents.QuestGeneratorAgent(mockLLM)
 
-        gameTools = GameToolsImpl(locationManager, rulesEngine, locationGenerator, questGenerator)
+        gameTools = GameToolsImpl(locationManager, rulesEngine, locationGenerator, questGenerator, mockLLM)
 
         // Create a test game state
         val startingLocation = locationManager.getStartingLocation(SystemType.SYSTEM_INTEGRATION)
@@ -68,7 +66,7 @@ class GameToolsImplTest {
     }
 
     @Test
-    fun `test generateLocation creates valid location`() = runBlocking {
+    fun `test generateLocation creates valid location`(): Unit = runBlocking {
         // Given
         val parentLocation = testGameState.currentLocation
         val discoveryContext = "search for a hidden cave"
@@ -97,7 +95,7 @@ class GameToolsImplTest {
     }
 
     @Test
-    fun `test generateLocation inherits zone from parent`() = runBlocking {
+    fun `test generateLocation inherits zone from parent`(): Unit = runBlocking {
         // Given
         val parentLocation = testGameState.currentLocation
         val discoveryContext = "explore the surrounding area"
@@ -117,7 +115,7 @@ class GameToolsImplTest {
     }
 
     @Test
-    fun `test generateLocation connects to parent location`() = runBlocking {
+    fun `test generateLocation connects to parent location`(): Unit = runBlocking {
         // Given
         val parentLocation = testGameState.currentLocation
         val discoveryContext = "look for secret passages"
@@ -140,7 +138,7 @@ class GameToolsImplTest {
     }
 
     @Test
-    fun `test generateLocation has appropriate danger level for player`() = runBlocking {
+    fun `test generateLocation has appropriate danger level for player`(): Unit = runBlocking {
         // Given
         val parentLocation = testGameState.currentLocation
         val discoveryContext = "investigate dangerous area"
@@ -182,7 +180,7 @@ class GameToolsImplTest {
     }
 
     @Test
-    fun `test generateLocation with different discovery contexts`() = runBlocking {
+    fun `test generateLocation with different discovery contexts`(): Unit = runBlocking {
         // Given
         val parentLocation = testGameState.currentLocation
         val context1 = "search for water source"
@@ -267,7 +265,7 @@ class GameToolsImplTest {
     }
 
     @Test
-    fun `test analyzeIntent detects exploration with location generation`() {
+    fun `test analyzeIntent detects exploration with location generation`() = runBlocking {
         // Given
         val input = "search for hidden caves"
         val recentEvents = emptyList<com.rpgenerator.core.api.GameEvent>()
@@ -278,11 +276,10 @@ class GameToolsImplTest {
         // Then
         assertEquals(com.rpgenerator.core.orchestration.Intent.EXPLORATION, analysis.intent)
         assertTrue(analysis.shouldGenerateLocation, "Should trigger location generation")
-        assertEquals(input, analysis.locationGenerationContext)
     }
 
     @Test
-    fun `test analyzeIntent detects combat intent`() {
+    fun `test analyzeIntent detects combat intent`() = runBlocking {
         // Given
         val input = "attack the goblin"
         val recentEvents = emptyList<com.rpgenerator.core.api.GameEvent>()

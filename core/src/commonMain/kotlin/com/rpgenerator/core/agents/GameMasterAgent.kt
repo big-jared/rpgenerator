@@ -89,6 +89,103 @@ internal class GameMasterAgent(private val llm: LLMInterface) {
     }
 
     /**
+     * Extract NPCs mentioned in narrator text that aren't already registered.
+     * Returns a list of NPCs to add to game state.
+     */
+    suspend fun extractNPCsFromNarration(
+        narrationText: String,
+        state: GameState
+    ): List<NPC> {
+        val existingNames = state.getNPCsAtCurrentLocation().map { it.name.lowercase() }.toSet()
+        if (narrationText.length < 20) return emptyList()
+
+        val prompt = """
+            Extract any named NPCs (non-player characters) from this narration text.
+            Only include characters who are PRESENT at the location and could be interacted with.
+            Do NOT include the player character, enemies killed in combat, or characters mentioned in passing who aren't here.
+
+            Existing registered NPCs (skip these): ${existingNames.ifEmpty { setOf("(none)") }.joinToString(", ")}
+
+            Narration:
+            "$narrationText"
+
+            Respond with JSON array (empty array if no new NPCs):
+            [
+                {
+                    "name": "Character Name",
+                    "role": "merchant|quest_giver|guard|innkeeper|trainer|scholar|wanderer|villager",
+                    "personality": "brief personality description",
+                    "description": "brief physical/role description"
+                }
+            ]
+
+            IMPORTANT: Return [] if there are no new interactive NPCs. Only named characters who the player could talk to.
+        """.trimIndent()
+
+        return try {
+            val response = agentStream.sendMessage(prompt).toList().joinToString("")
+            parseExtractedNPCs(response, state.currentLocation.id, existingNames)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun parseExtractedNPCs(
+        response: String,
+        locationId: String,
+        existingNames: Set<String>
+    ): List<NPC> {
+        // Extract JSON array from response
+        val jsonStart = response.indexOf('[')
+        val jsonEnd = response.lastIndexOf(']')
+        if (jsonStart == -1 || jsonEnd == -1) return emptyList()
+
+        val jsonStr = response.substring(jsonStart, jsonEnd + 1)
+
+        return try {
+            val parsed = json.parseToJsonElement(jsonStr)
+            if (parsed !is kotlinx.serialization.json.JsonArray) return emptyList()
+
+            parsed.mapNotNull { element ->
+                val obj = element as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
+                val name = obj["name"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: return@mapNotNull null
+                if (name.lowercase() in existingNames) return@mapNotNull null
+
+                val role = obj["role"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: "wanderer"
+                val personality = obj["personality"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: "mysterious"
+                val description = obj["description"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: ""
+
+                val archetype = when (role.lowercase()) {
+                    "merchant" -> NPCArchetype.MERCHANT
+                    "quest_giver" -> NPCArchetype.QUEST_GIVER
+                    "guard" -> NPCArchetype.GUARD
+                    "innkeeper" -> NPCArchetype.INNKEEPER
+                    "trainer" -> NPCArchetype.TRAINER
+                    "scholar" -> NPCArchetype.SCHOLAR
+                    "wanderer" -> NPCArchetype.WANDERER
+                    else -> NPCArchetype.VILLAGER
+                }
+
+                NPC(
+                    id = "npc_${name.lowercase().replace(" ", "_")}_${currentTimeMillis()}",
+                    name = name,
+                    archetype = archetype,
+                    locationId = locationId,
+                    personality = NPCPersonality(
+                        traits = listOf(role),
+                        speechPattern = personality,
+                        motivations = listOf(description)
+                    ),
+                    lore = description,
+                    greetingContext = "Appeared during narration"
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
      * Create a full NPC based on the decision
      */
     suspend fun createNPC(template: NPCCreationTemplate): NPC {

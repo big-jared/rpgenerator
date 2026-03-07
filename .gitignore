@@ -49,3 +49,17 @@ cli/music/*.wav
 cli/music/*.sf2
 cli/music/*.mid
 .rpgenerator-debug/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# MCP config with local paths
+mcp-config.json
+
+# Node modules (mcp-worker)
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+*.pem

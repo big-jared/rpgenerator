@@ -1,21 +1,30 @@
 package com.rpgenerator.core.npc
 
-import app.cash.turbine.test
 import com.rpgenerator.core.api.GameEvent
 import com.rpgenerator.core.domain.*
 import com.rpgenerator.core.orchestration.GameOrchestrator
 import com.rpgenerator.core.test.MockLLMInterface
 import com.rpgenerator.core.test.TestHelpers
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+/**
+ * Tests for the NPC system.
+ *
+ * NPC dialogue goes through the coordinated path: GM plans → mechanics (dialogue + relationship) →
+ * Narrator renders. The unified narration includes NPC speech woven into the scene.
+ *
+ * Tests that interact with the orchestrator validate state changes (conversation history,
+ * relationships) after the narration completes.
+ */
 class NPCSystemTest {
 
     @Test
-    fun `NPC dialogue emits NPCDialogue event`() = runTest {
+    fun `NPC dialogue produces narration and updates conversation history`() = runTest {
         val mockLLM = MockLLMInterface()
         val merchant = NPCTemplates.createMerchant("merchant-1", "Garrick", "test-location")
 
@@ -24,52 +33,30 @@ class NPCSystemTest {
 
         val orchestrator = GameOrchestrator(mockLLM, initialState)
 
-        orchestrator.processInput("I talk to Garrick").test {
-            val event = awaitItem()
-            assertTrue(event is GameEvent.NPCDialogue, "Should emit NPCDialogue event")
-            assertEquals("Garrick", (event as GameEvent.NPCDialogue).npcName)
-            assertTrue(event.text.isNotEmpty(), "Dialogue should not be empty")
+        val events = orchestrator.processInput("I talk to Garrick").toList()
+        assertTrue(events.isNotEmpty(), "Should emit at least one event")
+        assertTrue(events.first() is GameEvent.NarratorText,
+            "First event should be narration, got: ${events.first()::class.simpleName}")
 
-            awaitComplete()
-        }
-    }
-
-    @Test
-    fun `talking to non-existent NPC shows error`() = runTest {
-        val mockLLM = MockLLMInterface()
-        val initialState = TestHelpers.createTestGameState()
-        val orchestrator = GameOrchestrator(mockLLM, initialState)
-
-        orchestrator.processInput("I talk to NonExistent").test {
-            val event = awaitItem()
-            assertTrue(event is GameEvent.SystemNotification, "Should show system notification")
-            assertTrue((event as GameEvent.SystemNotification).text.contains("no one named"))
-
-            awaitComplete()
-        }
-    }
-
-    @Test
-    fun `NPC conversation is saved to history`() = runTest {
-        val mockLLM = MockLLMInterface()
-        val merchant = NPCTemplates.createMerchant("merchant-1", "Garrick", "test-location")
-
-        val initialState = TestHelpers.createTestGameState()
-            .addNPC(merchant)
-
-        val orchestrator = GameOrchestrator(mockLLM, initialState)
-
-        orchestrator.processInput("I talk to Garrick about weapons").test {
-            awaitItem() // Consume the dialogue event
-            awaitComplete()
-        }
-
+        // Verify conversation was saved to NPC state
         val finalState = orchestrator.getState()
         val updatedNPC = finalState.findNPCByName("Garrick")
+        assertNotNull(updatedNPC, "NPC should exist")
+        assertTrue(updatedNPC.conversationHistory.isNotEmpty(),
+            "Should have conversation history")
+    }
 
-        assertNotNull(updatedNPC, "NPC should still exist")
-        assertTrue(updatedNPC.conversationHistory.isNotEmpty(), "Should have conversation history")
-        assertEquals(1, updatedNPC.conversationHistory.size, "Should have one conversation entry")
+    @Test
+    fun `talking to non-existent NPC still produces narration`() = runTest {
+        val mockLLM = MockLLMInterface()
+        val initialState = TestHelpers.createTestGameState()
+        val orchestrator = GameOrchestrator(mockLLM, initialState)
+
+        // No NPCs at location — narrator handles it gracefully
+        val events = orchestrator.processInput("I talk to NonExistent").toList()
+        assertTrue(events.isNotEmpty(), "Should emit at least one event")
+        assertTrue(events.first() is GameEvent.NarratorText,
+            "Should emit narration even when NPC not found")
     }
 
     @Test
@@ -86,11 +73,7 @@ class NPCSystemTest {
         val npcBefore = initialState.findNPCByName("Marcus")
         assertEquals(0, npcBefore?.getRelationship(initialState.gameId)?.affinity ?: -1)
 
-        orchestrator.processInput("I thank Marcus for his service").test {
-            awaitItem() // Dialogue event
-            // Consume any remaining events (may or may not get relationship notification)
-            cancelAndIgnoreRemainingEvents()
-        }
+        orchestrator.processInput("I thank Marcus for his service").toList()
 
         val finalState = orchestrator.getState()
         val npcAfter = finalState.findNPCByName("Marcus")
@@ -127,7 +110,6 @@ class NPCSystemTest {
         val state = TestHelpers.createTestGameState(playerLevel = 1)
             .addNPC(merchant)
 
-        // Try to purchase an item with level 5 requirement
         val shop = merchant.shop!!
         val highLevelItem = ShopItem(
             id = "legendary_sword",
@@ -147,7 +129,6 @@ class NPCSystemTest {
             )
         )
 
-        // Simulate purchase attempt (would normally go through GameTools)
         val canPurchase = highLevelItem.requiredLevel <= state.playerLevel
         assertTrue(!canPurchase, "Should not be able to purchase high-level item")
     }
@@ -165,7 +146,7 @@ class NPCSystemTest {
             price = 500,
             stock = 1,
             requiredLevel = 1,
-            requiredRelationship = 50, // Need 50 affinity
+            requiredRelationship = 50,
             itemData = ShopItemData.ConsumableData(
                 InventoryItem(
                     id = "special_item",
@@ -180,6 +161,82 @@ class NPCSystemTest {
         val canPurchase = relationship.affinity >= specialItem.requiredRelationship
 
         assertTrue(!canPurchase, "Should not be able to purchase without sufficient relationship")
+    }
+
+    @Test
+    fun `NPC memory stores player level at time of conversation`() = runTest {
+        val mockLLM = MockLLMInterface()
+        val merchant = NPCTemplates.createMerchant("merchant-1", "Garrick", "test-location")
+
+        val initialState = TestHelpers.createTestGameState(playerLevel = 3)
+            .addNPC(merchant)
+
+        val orchestrator = GameOrchestrator(mockLLM, initialState)
+
+        orchestrator.processInput("I talk to Garrick").toList()
+
+        val finalState = orchestrator.getState()
+        val updatedNPC = finalState.findNPCByName("Garrick")
+
+        val conversation = updatedNPC?.conversationHistory?.firstOrNull()
+        assertEquals(3, conversation?.playerLevel, "Should remember player was level 3")
+    }
+
+    @Test
+    fun `shop transaction checks stock availability`() {
+        val shop = Shop(
+            name = "Test Shop",
+            inventory = listOf(
+                ShopItem(
+                    id = "potion",
+                    name = "Health Potion",
+                    description = "Heals HP",
+                    price = 25,
+                    stock = 2,
+                    itemData = ShopItemData.ConsumableData(
+                        InventoryItem(
+                            id = "potion",
+                            name = "Health Potion",
+                            description = "Heals HP",
+                            type = ItemType.CONSUMABLE
+                        )
+                    )
+                )
+            )
+        )
+
+        val item = shop.getItem("potion")
+        assertNotNull(item)
+        assertEquals(2, item.stock)
+
+        val hasEnoughStock = item.stock >= 3
+        assertTrue(!hasEnoughStock, "Should not have enough stock")
+    }
+
+    @Test
+    fun `blacksmith has weapon and armor inventory`() {
+        val blacksmith = NPCTemplates.createBlacksmith("bs1", "Thorin", "loc")
+
+        val shop = blacksmith.shop
+        assertNotNull(shop)
+
+        val hasWeapons = shop.inventory.any { it.itemData is ShopItemData.WeaponData }
+        val hasArmor = shop.inventory.any { it.itemData is ShopItemData.ArmorData }
+
+        assertTrue(hasWeapons, "Blacksmith should sell weapons")
+        assertTrue(hasArmor, "Blacksmith should sell armor")
+    }
+
+    @Test
+    fun `alchemist has potion inventory`() {
+        val alchemist = NPCTemplates.createAlchemist("alch1", "Morgana", "loc")
+
+        val shop = alchemist.shop
+        assertNotNull(shop)
+        assertTrue(shop.inventory.isNotEmpty(), "Alchemist should have inventory")
+
+        val allConsumables = shop.inventory.all { it.itemData is ShopItemData.ConsumableData }
+        assertTrue(allConsumables, "Alchemist should primarily sell consumables")
     }
 
     @Test
@@ -247,86 +304,5 @@ class NPCSystemTest {
 
         val hostile = relationship.copy(affinity = -50)
         assertEquals(RelationshipStatus.HOSTILE, hostile.getStatus())
-    }
-
-    @Test
-    fun `NPC memory stores player level at time of conversation`() = runTest {
-        val mockLLM = MockLLMInterface()
-        val merchant = NPCTemplates.createMerchant("merchant-1", "Garrick", "test-location")
-
-        val initialState = TestHelpers.createTestGameState(playerLevel = 3)
-            .addNPC(merchant)
-
-        val orchestrator = GameOrchestrator(mockLLM, initialState)
-
-        orchestrator.processInput("I talk to Garrick").test {
-            awaitItem()
-            awaitComplete()
-        }
-
-        val finalState = orchestrator.getState()
-        val updatedNPC = finalState.findNPCByName("Garrick")
-
-        val conversation = updatedNPC?.conversationHistory?.firstOrNull()
-        assertEquals(3, conversation?.playerLevel, "Should remember player was level 3")
-    }
-
-    @Test
-    fun `shop transaction checks stock availability`() {
-        val shop = Shop(
-            name = "Test Shop",
-            inventory = listOf(
-                ShopItem(
-                    id = "potion",
-                    name = "Health Potion",
-                    description = "Heals HP",
-                    price = 25,
-                    stock = 2, // Only 2 in stock
-                    itemData = ShopItemData.ConsumableData(
-                        InventoryItem(
-                            id = "potion",
-                            name = "Health Potion",
-                            description = "Heals HP",
-                            type = ItemType.CONSUMABLE
-                        )
-                    )
-                )
-            )
-        )
-
-        val item = shop.getItem("potion")
-        assertNotNull(item)
-        assertEquals(2, item.stock)
-
-        // Attempting to purchase 3 when only 2 available should fail
-        val hasEnoughStock = item.stock >= 3
-        assertTrue(!hasEnoughStock, "Should not have enough stock")
-    }
-
-    @Test
-    fun `blacksmith has weapon and armor inventory`() {
-        val blacksmith = NPCTemplates.createBlacksmith("bs1", "Thorin", "loc")
-
-        val shop = blacksmith.shop
-        assertNotNull(shop)
-
-        val hasWeapons = shop.inventory.any { it.itemData is ShopItemData.WeaponData }
-        val hasArmor = shop.inventory.any { it.itemData is ShopItemData.ArmorData }
-
-        assertTrue(hasWeapons, "Blacksmith should sell weapons")
-        assertTrue(hasArmor, "Blacksmith should sell armor")
-    }
-
-    @Test
-    fun `alchemist has potion inventory`() {
-        val alchemist = NPCTemplates.createAlchemist("alch1", "Morgana", "loc")
-
-        val shop = alchemist.shop
-        assertNotNull(shop)
-        assertTrue(shop.inventory.isNotEmpty(), "Alchemist should have inventory")
-
-        // All items should be consumables (potions/elixirs)
-        val allConsumables = shop.inventory.all { it.itemData is ShopItemData.ConsumableData }
-        assertTrue(allConsumables, "Alchemist should primarily sell consumables")
     }
 }

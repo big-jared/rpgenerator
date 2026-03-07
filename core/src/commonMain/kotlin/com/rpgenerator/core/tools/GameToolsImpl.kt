@@ -3,16 +3,19 @@ package com.rpgenerator.core.tools
 import com.rpgenerator.core.agents.LocationGeneratorAgent
 import com.rpgenerator.core.agents.QuestGeneratorAgent
 import com.rpgenerator.core.api.GameEvent
+import com.rpgenerator.core.api.LLMInterface
 import com.rpgenerator.core.domain.*
 import com.rpgenerator.core.orchestration.Intent
 import com.rpgenerator.core.rules.RulesEngine
 import com.rpgenerator.core.util.currentTimeMillis
+import kotlinx.coroutines.flow.toList
 
 internal class GameToolsImpl(
     private val locationManager: LocationManager,
     private val rulesEngine: RulesEngine,
     private val locationGenerator: LocationGeneratorAgent,
     private val questGenerator: QuestGeneratorAgent,
+    private val llm: LLMInterface? = null,
     private val eventLog: MutableList<GameEvent> = mutableListOf()
 ) : GameTools {
 
@@ -109,151 +112,96 @@ internal class GameToolsImpl(
         )
     }
 
-    override fun analyzeIntent(
+    override suspend fun analyzeIntent(
         input: String,
         state: GameState,
         recentEvents: List<GameEvent>
     ): IntentAnalysis {
-        val lowerInput = input.lowercase()
+        val llmInstance = llm ?: return fallbackIntent(input)
 
-        return when {
-            lowerInput.contains("attack") ||
-            lowerInput.contains("fight") ||
-            lowerInput.contains("kill") ||
-            lowerInput.contains("strike") -> {
-                val target = extractTarget(input) ?: "unknown enemy"
-                IntentAnalysis(
-                    intent = Intent.COMBAT,
-                    target = target,
-                    reasoning = "Player initiated combat action"
-                )
-            }
-
-            lowerInput.contains("talk") ||
-            lowerInput.contains("speak") ||
-            lowerInput.contains("ask") ||
-            lowerInput.contains("tell") ||
-            lowerInput.contains("thank") ||
-            lowerInput.contains("greet") -> {
-                val target = extractTarget(input) ?: "unknown npc"
-                IntentAnalysis(
-                    intent = Intent.NPC_DIALOGUE,
-                    target = target,
-                    reasoning = "Player attempting dialogue"
-                )
-            }
-
-            lowerInput.contains("stats") ||
-            lowerInput.contains("status") ||
-            lowerInput.contains("inventory") ||
-            lowerInput.contains("level") -> {
-                IntentAnalysis(
-                    intent = Intent.SYSTEM_QUERY,
-                    reasoning = "Player checking character status"
-                )
-            }
-
-            lowerInput.contains("quest") -> {
-                IntentAnalysis(
-                    intent = Intent.QUEST_ACTION,
-                    reasoning = "Player interacting with quest system"
-                )
-            }
-
-            lowerInput.contains("class") ||
-            lowerInput.contains("choose class") ||
-            lowerInput.contains("select class") ||
-            lowerInput.contains("pick class") ||
-            lowerInput.contains("warrior") ||
-            lowerInput.contains("mage") ||
-            lowerInput.contains("rogue") ||
-            lowerInput.contains("ranger") ||
-            lowerInput.contains("cultivator") -> {
-                // Extract the specific class if mentioned
-                val chosenClass = when {
-                    lowerInput.contains("warrior") -> "warrior"
-                    lowerInput.contains("mage") -> "mage"
-                    lowerInput.contains("rogue") -> "rogue"
-                    lowerInput.contains("ranger") -> "ranger"
-                    lowerInput.contains("cultivator") -> "cultivator"
-                    else -> null
-                }
-                IntentAnalysis(
-                    intent = Intent.CLASS_SELECTION,
-                    target = chosenClass,
-                    reasoning = "Player selecting or inquiring about class"
-                )
-            }
-
-            // Skill-related intents
-            lowerInput.contains("skill") && (lowerInput.contains("list") || lowerInput.contains("show") || lowerInput.contains("view") || lowerInput.contains("menu")) ||
-            lowerInput.contains("skills") ||
-            lowerInput.contains("abilities") -> {
-                IntentAnalysis(
-                    intent = Intent.SKILL_MENU,
-                    reasoning = "Player viewing skills"
-                )
-            }
-
-            lowerInput.contains("use ") || lowerInput.contains("cast ") || lowerInput.contains("activate ") -> {
-                // Extract skill name from input
-                val skillName = extractSkillName(input)
-                IntentAnalysis(
-                    intent = Intent.USE_SKILL,
-                    target = skillName,
-                    reasoning = "Player using a skill"
-                )
-            }
-
-            lowerInput.contains("evolve") && lowerInput.contains("skill") ||
-            lowerInput.contains("evolution") -> {
-                val skillName = extractSkillName(input)
-                IntentAnalysis(
-                    intent = Intent.SKILL_EVOLUTION,
-                    target = skillName,
-                    reasoning = "Player evolving a skill"
-                )
-            }
-
-            lowerInput.contains("fuse") || lowerInput.contains("fusion") || lowerInput.contains("combine skill") -> {
-                IntentAnalysis(
-                    intent = Intent.SKILL_FUSION,
-                    reasoning = "Player fusing skills"
-                )
-            }
-
-            // Menu intents - more specific than SYSTEM_QUERY
-            lowerInput.contains("status") && lowerInput.contains("full") ||
-            lowerInput.contains("character sheet") ||
-            lowerInput.contains("detailed status") -> {
-                IntentAnalysis(
-                    intent = Intent.STATUS_MENU,
-                    reasoning = "Player viewing detailed status"
-                )
-            }
-
-            lowerInput.contains("inventory") && (lowerInput.contains("show") || lowerInput.contains("list") || lowerInput.contains("open")) ||
-            lowerInput.contains("bag") ||
-            lowerInput.contains("items") -> {
-                IntentAnalysis(
-                    intent = Intent.INVENTORY_MENU,
-                    reasoning = "Player viewing inventory"
-                )
-            }
-
-            else -> {
-                val shouldDiscover = lowerInput.contains("search") ||
-                                   lowerInput.contains("explore") ||
-                                   lowerInput.contains("investigate")
-
-                IntentAnalysis(
-                    intent = Intent.EXPLORATION,
-                    reasoning = "Player exploring or moving",
-                    shouldGenerateLocation = shouldDiscover,
-                    locationGenerationContext = if (shouldDiscover) input else null
-                )
+        val knownSkills = state.characterSheet.skills.joinToString(", ") { it.name }.ifEmpty { "none" }
+        val hasClass = state.characterSheet.playerClass != PlayerClass.NONE
+        val recentContext = recentEvents.takeLast(3).joinToString("; ") {
+            when (it) {
+                is GameEvent.NarratorText -> "Narration: ${it.text.take(80)}..."
+                is GameEvent.SystemNotification -> "System: ${it.text.take(80)}"
+                else -> it.toString().take(80)
             }
         }
+
+        val prompt = """
+Classify this player input into exactly one intent. Respond in EXACTLY this format, nothing else:
+INTENT: <intent>
+TARGET: <target or NONE>
+REASONING: <brief reason>
+SHOULD_GENERATE_LOCATION: <true or false>
+
+Player input: "$input"
+
+Game context:
+- Location: ${state.currentLocation.name}
+- Has class: $hasClass (${if (hasClass) state.characterSheet.playerClass.displayName else "NONE"})
+- Known skills: $knownSkills
+- Recent events: $recentContext
+
+Valid intents (pick ONE):
+- COMBAT: Player wants to fight, attack, or engage an enemy. TARGET = enemy name.
+- NPC_DIALOGUE: Player wants to talk to, ask, or interact with a character. TARGET = NPC name.
+- EXPLORATION: Player wants to look around, move, search, examine, or interact with the environment. Set SHOULD_GENERATE_LOCATION=true if they're actively searching/exploring new areas.
+- CLASS_SELECTION: Player is choosing, asking about, or naming a class. Includes custom class names. Use this if they have no class and are responding to a class selection prompt.
+- USE_SKILL: Player wants to use/cast/activate a specific known skill. TARGET = skill name. Only if it matches a known skill.
+- SKILL_MENU: Player wants to VIEW or LIST their skills/abilities (not use them).
+- SKILL_EVOLUTION: Player wants to evolve or upgrade a skill.
+- SKILL_FUSION: Player wants to fuse/combine skills.
+- SYSTEM_QUERY: Player wants to check their stats, status, or level — a quick info query.
+- STATUS_MENU: Player wants a detailed character sheet view.
+- INVENTORY_MENU: Player wants to view or manage their inventory/items/bag.
+- QUEST_ACTION: Player is interacting with the quest system (checking quests, accepting, turning in).
+
+Important: Match the INTENT to what the player actually wants to DO, not individual words. "I want to test my abilities on something" = EXPLORATION or COMBAT, not SKILL_MENU.
+""".trim()
+
+        val agent = llmInstance.startAgent(
+            "You are an intent classifier for a LitRPG game. Respond ONLY in the exact format requested. Be concise."
+        )
+        val response = agent.sendMessage(prompt).toList().joinToString("")
+        return parseIntentResponse(response)
+    }
+
+    private fun parseIntentResponse(response: String): IntentAnalysis {
+        val lines = response.trim().lines()
+        val intentLine = lines.find { it.startsWith("INTENT:") }
+            ?: return IntentAnalysis(Intent.EXPLORATION, reasoning = "Failed to parse LLM response")
+
+        val intentStr = intentLine.substringAfter(":").trim()
+        val targetStr = lines.find { it.startsWith("TARGET:") }
+            ?.substringAfter(":")?.trim()?.let { if (it == "NONE" || it.isBlank()) null else it }
+        val reasoning = lines.find { it.startsWith("REASONING:") }
+            ?.substringAfter(":")?.trim() ?: "LLM classified"
+        val shouldGenerate = lines.find { it.startsWith("SHOULD_GENERATE_LOCATION:") }
+            ?.substringAfter(":")?.trim()?.equals("true", ignoreCase = true) ?: false
+
+        val intent = try {
+            Intent.valueOf(intentStr)
+        } catch (e: Exception) {
+            Intent.EXPLORATION
+        }
+
+        return IntentAnalysis(
+            intent = intent,
+            target = targetStr,
+            reasoning = reasoning,
+            shouldGenerateLocation = shouldGenerate,
+            locationGenerationContext = if (shouldGenerate) targetStr else null
+        )
+    }
+
+    private fun fallbackIntent(input: String): IntentAnalysis {
+        // Minimal fallback when no LLM is available (e.g. tests with mock that doesn't provide LLM)
+        return IntentAnalysis(
+            intent = Intent.EXPLORATION,
+            reasoning = "No LLM available, defaulting to exploration"
+        )
     }
 
     override fun resolveCombat(target: String, state: GameState): CombatResolution {
@@ -800,46 +748,4 @@ internal class GameToolsImpl(
         eventLog.add(event)
     }
 
-    private fun extractTarget(input: String): String? {
-        val words = input.lowercase().split(" ")
-        val actionWords = setOf("attack", "fight", "kill", "strike", "talk", "speak", "ask", "thank", "greet", "tell")
-        val skipWords = setOf("the", "to", "with", "at")
-
-        val actionIndex = words.indexOfFirst { it in actionWords }
-        if (actionIndex == -1 || actionIndex == words.size - 1) return null
-
-        val nextWord = words[actionIndex + 1]
-        return if (nextWord in skipWords && actionIndex + 2 < words.size) {
-            words[actionIndex + 2]
-        } else {
-            nextWord
-        }
-    }
-
-    /**
-     * Extract skill name from player input.
-     * Handles patterns like "use Power Strike", "cast Fireball", "activate Inner Focus"
-     */
-    private fun extractSkillName(input: String): String? {
-        val lowerInput = input.lowercase()
-        val skillActionWords = setOf("use", "cast", "activate", "evolve")
-        val skipWords = setOf("the", "my", "skill")
-
-        val words = input.split(" ")
-        val lowerWords = lowerInput.split(" ")
-
-        val actionIndex = lowerWords.indexOfFirst { it in skillActionWords }
-        if (actionIndex == -1 || actionIndex == words.size - 1) return null
-
-        // Collect remaining words after the action, skipping filler words
-        val remainingWords = words.drop(actionIndex + 1)
-            .filter { it.lowercase() !in skipWords }
-
-        // Return multi-word skill name (e.g., "Power Strike", "Frost Bolt")
-        return if (remainingWords.isNotEmpty()) {
-            remainingWords.joinToString(" ")
-        } else {
-            null
-        }
-    }
 }

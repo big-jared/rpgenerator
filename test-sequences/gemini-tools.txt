@@ -1,0 +1,32 @@
+# Test all Gemini tool calls directly
+# Run with: ./gradlew :cli:run --args="--test sequence test-sequences/gemini-tools.txt --mock"
+
+create SYSTEM_INTEGRATION
+
+# State query tools
+tool get_player_stats
+tool get_location
+tool get_character_sheet
+tool get_inventory
+tool get_active_quests
+tool get_npcs_here
+
+# Combat tool
+tool attack_target target=goblin
+
+# Check post-combat state
+tool get_player_stats
+tool get_inventory
+
+# Multimodal tools
+tool generate_scene_art sceneDescription=A dark forest with glowing mushrooms
+tool shift_music_mood mood=tense intensity=0.7
+
+# NPC interaction (should fail gracefully - no NPCs in test state)
+tool talk_to_npc npcName=merchant
+
+# World generation tools
+tool generate_location description=A hidden cave behind a waterfall
+tool generate_npc name=Grimjaw role=blacksmith personality=gruff and honest
+
+state

@@ -32,6 +32,10 @@ data class EventMetadata(
         is GameEvent.StatChange -> "${event.statName}: ${event.oldValue} -> ${event.newValue}"
         is GameEvent.ItemGained -> "Gained ${event.quantity}x ${event.itemName}"
         is GameEvent.QuestUpdate -> "${event.status} - ${event.questName}"
+        is GameEvent.SceneImage -> event.description
+        is GameEvent.NarratorAudio -> "Audio narration"
+        is GameEvent.MusicChange -> "Music: ${event.mood}"
+        is GameEvent.NPCPortrait -> "Portrait: ${event.npcName}"
     }
 
     companion object {
@@ -104,6 +108,10 @@ data class EventMetadata(
                     }
                 }
                 is GameEvent.SystemNotification -> EventCategory.SYSTEM
+                is GameEvent.SceneImage -> EventCategory.NARRATIVE
+                is GameEvent.NarratorAudio -> EventCategory.NARRATIVE
+                is GameEvent.MusicChange -> EventCategory.SYSTEM
+                is GameEvent.NPCPortrait -> EventCategory.DIALOGUE
             }
         }
 
@@ -148,6 +156,10 @@ data class EventMetadata(
                     }
                 }
                 is GameEvent.SystemNotification -> EventImportance.LOW
+                is GameEvent.SceneImage -> EventImportance.LOW
+                is GameEvent.NarratorAudio -> EventImportance.LOW
+                is GameEvent.MusicChange -> EventImportance.LOW
+                is GameEvent.NPCPortrait -> EventImportance.LOW
             }
         }
 

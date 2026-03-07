@@ -1,0 +1,30 @@
+# Basic game flow test sequence
+# Run with: ./gradlew :cli:run --args="--test sequence test-sequences/basic-flow.txt --mock"
+
+create SYSTEM_INTEGRATION
+
+# Opening narration
+play
+
+# Explore the area
+play I look around the area carefully
+
+# Check tools work
+tool get_player_stats
+tool get_location
+tool get_npcs_here
+tool get_character_sheet
+tool get_inventory
+tool get_active_quests
+
+# Try combat
+play I attack the nearest creature
+
+# Check state after combat
+tool get_player_stats
+
+# Try exploration
+play I search for hidden paths
+
+# Final state
+state
