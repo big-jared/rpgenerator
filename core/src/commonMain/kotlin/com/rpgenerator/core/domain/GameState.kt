@@ -24,6 +24,7 @@ internal data class GameState(
     val npcsByLocation: Map<String, List<NPC>> = emptyMap(), // locationId -> NPCs at that location
     val activeQuests: Map<String, Quest> = emptyMap(),
     val completedQuests: Set<String> = emptySet(),
+    val combatState: CombatState? = null, // non-null when in active combat
     val deathCount: Int = 0,
     val hasOpeningNarrationPlayed: Boolean = false
 ) {
@@ -31,6 +32,7 @@ internal data class GameState(
     val playerLevel: Int get() = characterSheet.level
     val playerXP: Long get() = characterSheet.xp
     val isDead: Boolean get() = characterSheet.resources.currentHP <= 0
+    val inCombat: Boolean get() = combatState != null && !combatState.isOver
 
     fun discoverLocation(locationId: String): GameState {
         return copy(discoveredTemplateLocations = discoveredTemplateLocations + locationId)

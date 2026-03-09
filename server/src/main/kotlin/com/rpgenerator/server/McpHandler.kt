@@ -90,7 +90,7 @@ object McpHandler {
             json.parseToJsonElement(body).jsonObject
         } catch (e: Exception) {
             call.respondText(
-                json.encodeToString(errorResponse(JsonNull, -32700, "Parse error: ${e.message}")),
+                json.encodeToString(JsonElement.serializer(),errorResponse(JsonNull, -32700, "Parse error: ${e.message}")),
                 ContentType.Application.Json,
                 HttpStatusCode.OK
             )
@@ -171,7 +171,7 @@ object McpHandler {
 
             call.response.header("Mcp-Session-Id", responseSessionId ?: "")
             call.respondText(
-                json.encodeToString(response),
+                json.encodeToString(JsonElement.serializer(),response),
                 ContentType.Application.Json,
                 HttpStatusCode.OK
             )
@@ -220,7 +220,7 @@ object McpHandler {
                     "Step 1: Create a new game session. MUST be called before set_character or start_game. Call get_game_state first to see available worlds with full descriptions. Choose a seedId to set the world.",
                     mapOf(
                         "systemType" to ToolParam("string", "Game system type: SYSTEM_INTEGRATION, CULTIVATION_PATH, DEATH_LOOP, DUNGEON_DELVE, ARCANE_ACADEMY, TABLETOP_CLASSIC, EPIC_JOURNEY, HERO_AWAKENING"),
-                        "seedId" to ToolParam("string", "World seed ID: integration (System Apocalypse — brutal survival, kill to level), tutorial (Tower Ascension — clear floors or die trying), crawler (Dungeon Crawler — dark comedy death game show), quiet_life (Cozy Apocalypse — rebuild after the wars)", required = true),
+                        "seedId" to ToolParam("string", "World seed ID: integration (System Apocalypse — brutal survival, kill to level), tabletop (Classic Fantasy — D&D-style heroic adventure), crawler (Dungeon Crawler — dark comedy death game show), quiet_life (Cozy Apocalypse — rebuild after the wars)", required = true),
                         "difficulty" to ToolParam("string", "Difficulty: EASY, NORMAL, HARD, NIGHTMARE")
                     ),
                     required = listOf("seedId")
@@ -378,7 +378,7 @@ object McpHandler {
                     // Text metadata first
                     addJsonObject {
                         put("type", JsonPrimitive("text"))
-                        put("text", JsonPrimitive(json.encodeToString(textResult)))
+                        put("text", JsonPrimitive(json.encodeToString(JsonElement.serializer(),textResult)))
                     }
                     // Image content block (Claude can see this directly)
                     if (imageBase64 != null && imageMimeType != null) {
@@ -424,7 +424,7 @@ object McpHandler {
                     try { SystemType.valueOf(it.uppercase()) } catch (e: Exception) { null }
                 } ?: SystemType.SYSTEM_INTEGRATION
                 val requestedSeedId = args["seedId"]?.jsonPrimitive?.contentOrNull
-                val validSeeds = listOf("integration", "tutorial", "crawler", "quiet_life")
+                val validSeeds = listOf("integration", "tabletop", "crawler", "quiet_life")
                 if (requestedSeedId != null && requestedSeedId !in validSeeds) {
                     return buildJsonObject {
                         put("success", JsonPrimitive(false))
@@ -464,7 +464,7 @@ object McpHandler {
                         put("error", JsonPrimitive("No game created yet. Call create_game first to choose your world."))
                         putJsonArray("availableSeeds") {
                             add(buildJsonObject { put("id", JsonPrimitive("integration")); put("name", JsonPrimitive("System Apocalypse")); put("tagline", JsonPrimitive("Brutal survival. Kill to level. Earth merged with an infinite multiverse.")) })
-                            add(buildJsonObject { put("id", JsonPrimitive("tutorial")); put("name", JsonPrimitive("Tower Ascension")); put("tagline", JsonPrimitive("Trapped in the System's game. Clear the floors or die trying.")) })
+                            add(buildJsonObject { put("id", JsonPrimitive("tabletop")); put("name", JsonPrimitive("Classic Fantasy")); put("tagline", JsonPrimitive("Roll for initiative. The Realm needs heroes.")) })
                             add(buildJsonObject { put("id", JsonPrimitive("crawler")); put("name", JsonPrimitive("Dungeon Crawler")); put("tagline", JsonPrimitive("Earth is gone. You're entertainment now. Make it a good show.")) })
                             add(buildJsonObject { put("id", JsonPrimitive("quiet_life")); put("name", JsonPrimitive("Cozy Apocalypse")); put("tagline", JsonPrimitive("The wars are over. Time to build something worth protecting.")) })
                         }
@@ -532,6 +532,22 @@ object McpHandler {
                 sessionState.gameStarted = true
                 persistSession(mcpSessionId, sessionState)
 
+                // Trigger opening narration by sending blank input
+                // GameOrchestrator.processInput("") plays the intro and returns
+                val introEvents = mutableListOf<JsonObject>()
+                try {
+                    session.game.processInput("").collect { event ->
+                        introEvents.add(gameEventToJson(event))
+                    }
+                    session.game.save()
+                } catch (e: Exception) {
+                    // Intro failed but game is still started — log it
+                    introEvents.add(buildJsonObject {
+                        put("type", JsonPrimitive("system"))
+                        put("text", JsonPrimitive("Game started. (Opening narration failed: ${e.message})"))
+                    })
+                }
+
                 return buildJsonObject {
                     put("success", JsonPrimitive(true))
                     put("gameId", JsonPrimitive(session.id))
@@ -540,7 +556,8 @@ object McpHandler {
                         put("backstory", JsonPrimitive(sessionState.backstory ?: ""))
                         put("avatarImageId", JsonPrimitive(sessionState.avatarImageId ?: ""))
                     }
-                    put("message", JsonPrimitive("Game started! The tutorial will guide class and equipment selection. Use send_player_input to begin your adventure."))
+                    putJsonArray("introEvents") { introEvents.forEach { add(it) } }
+                    put("message", JsonPrimitive("Game started! Use send_player_input to play."))
                 }
             }
 
@@ -568,11 +585,11 @@ object McpHandler {
                                 put("tone", JsonPrimitive("Brutal, visceral, desperate, empowering"))
                             })
                             add(buildJsonObject {
-                                put("seedId", JsonPrimitive("tutorial"))
-                                put("name", JsonPrimitive("Tower Ascension"))
-                                put("tagline", JsonPrimitive("Trapped in the System's game. Clear the floors or die trying."))
-                                put("description", JsonPrimitive("Earth frozen in stasis. Humanity pulled into an impossible Tower with one hundred floors of escalating danger. You appear on Floor One with thousands of other bewildered climbers. An enigmatic voice — the Arbiter — announces the rules: ascend or perish. Classes are earned through action, not menus. The Tower watches what you do and rewards creativity. Form alliances, scout paths, defeat floor bosses, and climb toward freedom. Inspired by Tower of God and Sword Art Online."))
-                                put("tone", JsonPrimitive("Tense, hopeful, claustrophobic, triumphant"))
+                                put("seedId", JsonPrimitive("tabletop"))
+                                put("name", JsonPrimitive("Classic Fantasy"))
+                                put("tagline", JsonPrimitive("Roll for initiative. The Realm needs heroes."))
+                                put("description", JsonPrimitive("A classic high-fantasy realm where magic flows through the Weave and adventurers are the thin line between civilization and darkness. You start at a roadside tavern on a stormy night — a notice board full of quests, a barkeep with secrets, and a hooded stranger waiting in the corner. Choose your class, pick your quest, and forge your legend. The System plays like an experienced DM: dry wit, real stakes, and dice rolls that matter. Inspired by D&D, Critical Role, and The Lord of the Rings."))
+                                put("tone", JsonPrimitive("Heroic, wondrous, grounded, witty"))
                             })
                             add(buildJsonObject {
                                 put("seedId", JsonPrimitive("crawler"))
@@ -1095,7 +1112,10 @@ object McpHandler {
                     val lastN = args["lastN"]?.jsonPrimitive?.intOrNull
 
                     val agents = if (filterName != null) {
-                        trackingLlm.agents.filter { it.name.equals(filterName, ignoreCase = true) }
+                        trackingLlm.agents.filter {
+                            it.name.equals(filterName, ignoreCase = true) ||
+                                it.name.contains(filterName, ignoreCase = true)
+                        }
                     } else {
                         trackingLlm.agents
                     }
@@ -1103,6 +1123,10 @@ object McpHandler {
                     buildJsonObject {
                         put("success", JsonPrimitive(true))
                         put("agentCount", JsonPrimitive(agents.size))
+                        putJsonObject("diagnostics") {
+                            put("sessionId", JsonPrimitive(session.id))
+                            put("trackingLlmIdentity", JsonPrimitive(System.identityHashCode(trackingLlm).toString()))
+                        }
                         putJsonArray("agents") {
                             agents.forEach { agent ->
                                 addJsonObject {

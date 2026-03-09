@@ -30,6 +30,5 @@ dependencyResolutionManagement {
 }
 
 include(":core")
-include(":cli")
 include(":server")
 include(":composeApp")

@@ -1,11 +1,10 @@
 package com.rpgenerator.server
 
-import com.rpgenerator.core.gemini.GeminiToolCall
-import com.rpgenerator.core.gemini.ToolResult
+import com.rpgenerator.core.api.GameEvent
+import com.rpgenerator.core.api.GameStateSnapshot
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.launch
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import java.util.Base64
 import com.google.genai.types.*
@@ -207,29 +206,69 @@ object GameWebSocketHandler {
                 args.forEach { (k, v) -> put(k, JsonPrimitive(v.toString())) }
             })}}""")
 
-            // Execute tool
-            val jsonArgs = buildJsonObject {
-                args.forEach { (key, value) ->
-                    when (value) {
-                        is String -> put(key, JsonPrimitive(value))
-                        is Number -> put(key, JsonPrimitive(value))
-                        is Boolean -> put(key, JsonPrimitive(value))
-                        else -> put(key, JsonPrimitive(value.toString()))
-                    }
+            // Convert args to Map<String, Any?>
+            val argsMap: Map<String, Any?> = args.mapValues { (_, value) ->
+                when (value) {
+                    is String -> value
+                    is Number -> value
+                    is Boolean -> value
+                    else -> value.toString()
                 }
             }
 
-            val toolCallObj = GeminiToolCall(id = id, name = name, arguments = jsonArgs)
-            val result = session.tools.dispatch(toolCallObj)
+            // Execute through real game engine
+            val result = session.game.executeTool(name, argsMap)
 
-            // Notify client of result
+            // Send game events to client
+            for (event in result.events) {
+                val eventJson = json.encodeToString(GameEvent.serializer(), event)
+                ws.send("""{"type": "game_event", "event": $eventJson}""")
+            }
+
+            // Send tool result to client
             ws.send("""{"type": "tool_result", "name": "$name", "success": ${result.success}}""")
+
+            // If this was a mutating tool, push state update
+            if (result.events.isNotEmpty()) {
+                try {
+                    val stateSnapshot = session.game.getState()
+                    val stateJson = json.encodeToString(GameStateSnapshot.serializer(), stateSnapshot)
+                    ws.send("""{"type": "state_update", "state": $stateJson}""")
+                } catch (_: Exception) { /* best-effort */ }
+            }
+
+            // Handle scene art generation
+            if (name == "generate_scene_art") {
+                session.scope.launch {
+                    try {
+                        val description = argsMap["description"]?.toString() ?: ""
+                        val state = session.game.getState()
+                        val imgResult = session.imageService.generateSceneArt(
+                            SceneArtRequest(
+                                locationName = state.location,
+                                description = description
+                            )
+                        )
+                        if (imgResult is ImageResult.Success) {
+                            val b64 = Base64.getEncoder().encodeToString(imgResult.imageData)
+                            ws.send("""{"type": "scene_image", "data": "$b64", "mimeType": "${imgResult.mimeType}"}""")
+                        }
+                    } catch (_: Exception) { /* best-effort image gen */ }
+                }
+            }
+
+            // Build response for Gemini
+            val resultData = buildJsonObject {
+                put("success", JsonPrimitive(result.success))
+                result.data.let { put("data", it) }
+                result.error?.let { put("error", JsonPrimitive(it)) }
+            }
 
             responses.add(
                 FunctionResponse.builder()
                     .id(id)
                     .name(name)
-                    .response(mapOf<String, Any>("result" to resultToJsonString(result)))
+                    .response(mapOf<String, Any>("result" to resultData.toString()))
                     .build()
             )
         }
@@ -241,14 +280,5 @@ object GameWebSocketHandler {
                 .build()
             session.geminiSession?.sendToolResponse(params)
         }
-    }
-
-    private fun resultToJsonString(result: ToolResult): String {
-        val obj = buildJsonObject {
-            put("success", JsonPrimitive(result.success))
-            result.data?.let { put("data", it) }
-            result.error?.let { put("error", JsonPrimitive(it)) }
-        }
-        return obj.toString()
     }
 }

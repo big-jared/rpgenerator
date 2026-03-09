@@ -3,7 +3,6 @@ package com.rpgenerator.server
 import com.google.genai.Client
 import com.google.genai.types.*
 import com.rpgenerator.core.api.*
-import com.rpgenerator.core.gemini.*
 import com.rpgenerator.core.persistence.DriverFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +40,7 @@ object GameSessionManager {
         val dbPath = "$dataDir/rpg_$id.db"
         val driver = DriverFactory(dbPath).createDriver()
         val client = RPGClient(driver)
-        val baseLlm = GeminiLLM()
+        val baseLlm = LLMFactory.create()
         val trackingLlm = TrackingLLMInterface(baseLlm)
 
         val config = GameConfig(
@@ -84,7 +83,7 @@ object GameSessionManager {
         return try {
             val driver = DriverFactory(dbPath).createDriver()
             val client = RPGClient(driver)
-            val baseLlm = GeminiLLM()
+            val baseLlm = LLMFactory.create()
             val trackingLlm = TrackingLLMInterface(baseLlm)
 
             val systemType = try { SystemType.valueOf(persisted.systemType) } catch (_: Exception) { SystemType.SYSTEM_INTEGRATION }
@@ -138,9 +137,6 @@ class GameSession(
     val trackingLlm: TrackingLLMInterface? = null,
     val imageService: ImageGenerationService = ImageGenerationService(geminiClient)
 ) {
-    // GeminiTools for voice path tool dispatching
-    val tools: GeminiTools = GeminiTools.createDefault(gameId = id, systemType = SystemType.SYSTEM_INTEGRATION)
-
     var geminiSession: GeminiAsyncSession? = null
         private set
 
@@ -152,33 +148,35 @@ class GameSession(
      */
     suspend fun connectToGemini(
         voiceName: String = "Kore",
-        systemPrompt: String = defaultSystemPrompt()
+        systemPrompt: String? = null
     ) {
-        // Build tool declarations from GeminiTools for voice path
-        val tools = GeminiTools.createDefault(gameId = id, systemType = SystemType.SYSTEM_INTEGRATION)
-        val toolDeclarations = tools.getToolDeclarations().map { decl ->
+        // Build tool declarations from real game engine
+        val toolDefs = game.getToolDefinitions()
+        val toolDeclarations = toolDefs.map { def ->
             FunctionDeclaration.builder()
-                .name(decl.name)
-                .description(decl.description)
+                .name(def.name)
+                .description(def.description)
                 .parameters(Schema.builder()
                     .type("OBJECT")
-                    .properties(decl.parameters.mapValues { (_, param) ->
-                        Schema.builder()
+                    .properties(def.parameters.associate { param ->
+                        param.name to Schema.builder()
                             .type(param.type.uppercase())
                             .description(param.description)
                             .build()
                     })
-                    .required(decl.parameters.filter { it.value.required }.keys.toList())
+                    .required(def.parameters.filter { it.required }.map { it.name })
                     .build()
                 )
                 .build()
         }
 
+        val prompt = systemPrompt ?: game.getSystemPrompt()
+
         val config = LiveConnectConfig.builder()
             .responseModalities(Modality.Known.AUDIO)
             .systemInstruction(
                 Content.builder()
-                    .parts(listOf(Part.builder().text(systemPrompt).build()))
+                    .parts(listOf(Part.builder().text(prompt).build()))
                     .build()
             )
             .tools(listOf(
@@ -200,7 +198,7 @@ class GameSession(
             .outputAudioTranscription(AudioTranscriptionConfig.builder().build())
             .build()
 
-        val modelId = "gemini-2.5-flash-preview-native-audio-dialog"
+        val modelId = "gemini-2.5-flash-native-audio-preview-12-2025"
         geminiSession = geminiClient.async.live.connect(modelId, config).get()
         connected = true
     }
@@ -215,17 +213,4 @@ class GameSession(
         disconnect()
         rpgClient.close()
     }
-
-    private fun defaultSystemPrompt(): String = """
-        You are the narrator of a LitRPG adventure game. Speak in a dramatic, immersive
-        style like a professional audiobook narrator. You bring the world to life with
-        vivid descriptions and emotional delivery.
-
-        You have access to game tools to query and modify the game state. ALWAYS use
-        tools when the player takes actions — check stats, resolve combat, update quests.
-        Narrate the results of tool calls dramatically.
-
-        Keep responses concise for voice. Short, punchy sentences. Build tension.
-        React to what the player says naturally — this is a conversation, not a script.
-    """.trimIndent()
 }

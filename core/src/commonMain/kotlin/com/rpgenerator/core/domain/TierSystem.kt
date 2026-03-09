@@ -32,27 +32,27 @@ enum class Grade(
     ),
     D_GRADE(
         displayName = "D-Grade",
-        levelRange = 26..75,
-        description = "First evolution. Specialized paths and class selection."
+        levelRange = 26..100,
+        description = "First evolution. Return to Earth. Specialized paths and class evolution."
     ),
     C_GRADE(
         displayName = "C-Grade",
-        levelRange = 76..150,
+        levelRange = 101..200,
         description = "Advanced tier. Skill mastery and path refinement."
     ),
     B_GRADE(
         displayName = "B-Grade",
-        levelRange = 151..250,
+        levelRange = 201..350,
         description = "Expert tier. Dao comprehension and power consolidation."
     ),
     A_GRADE(
         displayName = "A-Grade",
-        levelRange = 251..400,
+        levelRange = 351..500,
         description = "Master tier. World-shaking powers emerge."
     ),
     S_GRADE(
         displayName = "S-Grade",
-        levelRange = 401..1000,
+        levelRange = 501..1000,
         description = "Transcendent tier. Peak of mortal achievement."
     );
 
@@ -342,6 +342,375 @@ internal enum class PlayerClass(
         fun selectableClasses(): List<PlayerClass> = values().filter { it != NONE }
     }
 }
+
+/**
+ * Profession system — non-combat specializations that complement the combat class.
+ * Professions grant crafting, gathering, and utility abilities.
+ * Available across all seed types with different flavor.
+ */
+@Serializable
+internal enum class Profession(
+    val displayName: String,
+    val description: String,
+    internal val statBonuses: Stats,
+    val category: ProfessionCategory = ProfessionCategory.CRAFTING
+) {
+    NONE(
+        displayName = "None",
+        description = "No profession selected yet.",
+        statBonuses = Stats(0, 0, 0, 0, 0, 0),
+        category = ProfessionCategory.NONE
+    ),
+
+    // === CRAFTING ===
+    WEAPONSMITH(
+        displayName = "Weaponsmith",
+        description = "Forge blades, bows, and bludgeons. Repair and enhance weapons beyond their base quality.",
+        statBonuses = Stats(strength = 2, constitution = 1, dexterity = 1),
+        category = ProfessionCategory.CRAFTING
+    ),
+    ARMORSMITH(
+        displayName = "Armorsmith",
+        description = "Shape metal and leather into protection. Heavy plates, light leathers, shields — all bend to your hammer.",
+        statBonuses = Stats(constitution = 2, strength = 2),
+        category = ProfessionCategory.CRAFTING
+    ),
+    ALCHEMIST(
+        displayName = "Alchemist",
+        description = "Brew potions, poisons, and elixirs. Transmute base materials into something extraordinary.",
+        statBonuses = Stats(intelligence = 2, wisdom = 2),
+        category = ProfessionCategory.CRAFTING
+    ),
+    ENCHANTER(
+        displayName = "Enchanter",
+        description = "Imbue items with magical properties. Turn mundane gear into legendary artifacts.",
+        statBonuses = Stats(intelligence = 3, wisdom = 1),
+        category = ProfessionCategory.CRAFTING
+    ),
+    RUNECRAFTER(
+        displayName = "Runecrafter",
+        description = "Inscribe runes of power onto surfaces, gear, and even skin. Ancient symbols, modern devastation.",
+        statBonuses = Stats(intelligence = 2, dexterity = 1, wisdom = 1),
+        category = ProfessionCategory.CRAFTING
+    ),
+    COOK(
+        displayName = "Cook",
+        description = "Transform raw ingredients into meals that grant temporary buffs. Good food wins wars.",
+        statBonuses = Stats(wisdom = 2, constitution = 1, charisma = 1),
+        category = ProfessionCategory.CRAFTING
+    ),
+    LEATHERWORKER(
+        displayName = "Leatherworker",
+        description = "Tan hides, stitch armor, craft bags and belts. Monster leather is tougher than steel if you cure it right.",
+        statBonuses = Stats(dexterity = 2, constitution = 1, wisdom = 1),
+        category = ProfessionCategory.CRAFTING
+    ),
+    JEWELER(
+        displayName = "Jeweler",
+        description = "Cut gems, set stones, craft rings and amulets. Small objects with outsized power.",
+        statBonuses = Stats(dexterity = 2, intelligence = 2),
+        category = ProfessionCategory.CRAFTING
+    ),
+    TINKERER(
+        displayName = "Tinkerer",
+        description = "Build gadgets, traps, and mechanical devices. Where magic meets engineering, you thrive.",
+        statBonuses = Stats(intelligence = 2, dexterity = 2),
+        category = ProfessionCategory.CRAFTING
+    ),
+    TAILOR(
+        displayName = "Tailor",
+        description = "Sew enchanted cloth, robes, and cloaks. The thread remembers what you weave into it.",
+        statBonuses = Stats(dexterity = 2, charisma = 1, wisdom = 1),
+        category = ProfessionCategory.CRAFTING
+    ),
+
+    // === GATHERING ===
+    HERBALIST(
+        displayName = "Herbalist",
+        description = "Identify and harvest plants, fungi, and natural reagents. The wilds are your pharmacy.",
+        statBonuses = Stats(wisdom = 3, constitution = 1),
+        category = ProfessionCategory.GATHERING
+    ),
+    MINER(
+        displayName = "Miner",
+        description = "Extract ores, gems, and crystals from stone. You see veins others walk past.",
+        statBonuses = Stats(strength = 2, constitution = 2),
+        category = ProfessionCategory.GATHERING
+    ),
+    SCAVENGER(
+        displayName = "Scavenger",
+        description = "Find useful salvage in ruins, corpses, and wreckage. One person's trash is your next upgrade.",
+        statBonuses = Stats(dexterity = 2, wisdom = 1, intelligence = 1),
+        category = ProfessionCategory.GATHERING
+    ),
+    HUNTER(
+        displayName = "Hunter",
+        description = "Track, trap, and skin. You know where creatures go, what they eat, and how to make use of every part.",
+        statBonuses = Stats(dexterity = 2, wisdom = 2),
+        category = ProfessionCategory.GATHERING
+    ),
+    LUMBERJACK(
+        displayName = "Lumberjack",
+        description = "Fell trees, process timber, identify wood types. System-enhanced lumber can be harder than stone.",
+        statBonuses = Stats(strength = 3, constitution = 1),
+        category = ProfessionCategory.GATHERING
+    ),
+    FISHER(
+        displayName = "Fisher",
+        description = "Pull things from water that have no business existing. System-touched fish grant buffs. The big ones fight back.",
+        statBonuses = Stats(wisdom = 2, dexterity = 1, constitution = 1),
+        category = ProfessionCategory.GATHERING
+    ),
+
+    // === UTILITY ===
+    SCRIBE(
+        displayName = "Scribe",
+        description = "Record, translate, and create scrolls. Knowledge is power — literally, when written in the right ink.",
+        statBonuses = Stats(intelligence = 3, charisma = 1),
+        category = ProfessionCategory.UTILITY
+    ),
+    HEALER_PROF(
+        displayName = "Field Medic",
+        description = "Treat wounds, set bones, cure disease. Not magic healing — real medicine backed by System knowledge.",
+        statBonuses = Stats(wisdom = 2, intelligence = 1, constitution = 1),
+        category = ProfessionCategory.UTILITY
+    ),
+    BUILDER(
+        displayName = "Builder",
+        description = "Construct shelters, fortifications, and infrastructure. Build what the world needs to survive.",
+        statBonuses = Stats(strength = 1, constitution = 2, intelligence = 1),
+        category = ProfessionCategory.UTILITY
+    ),
+    MERCHANT(
+        displayName = "Merchant",
+        description = "Buy low, sell high, appraise everything. Networks and negotiation are your greatest tools.",
+        statBonuses = Stats(charisma = 3, intelligence = 1),
+        category = ProfessionCategory.UTILITY
+    ),
+    CARTOGRAPHER(
+        displayName = "Cartographer",
+        description = "Map the unmapped. Dungeons, zones, incursion rifts — you see the patterns others miss.",
+        statBonuses = Stats(intelligence = 2, wisdom = 1, dexterity = 1),
+        category = ProfessionCategory.UTILITY
+    ),
+    FARMER(
+        displayName = "Farmer",
+        description = "Grow crops in System-touched soil. Mana-infused wheat, stat-boosting vegetables, herbs that shouldn't exist.",
+        statBonuses = Stats(wisdom = 2, constitution = 2),
+        category = ProfessionCategory.UTILITY
+    ),
+    BREWER(
+        displayName = "Brewer",
+        description = "Ferment, distill, and bottle. Ale that heals, wine that buffs, spirits that burn with actual fire.",
+        statBonuses = Stats(wisdom = 2, charisma = 1, constitution = 1),
+        category = ProfessionCategory.UTILITY
+    ),
+    BEAST_TAMER(
+        displayName = "Beast Tamer",
+        description = "Bond with monsters and animals. Train mounts, companions, and guard beasts. They fight for you because they choose to.",
+        statBonuses = Stats(charisma = 2, wisdom = 2),
+        category = ProfessionCategory.UTILITY
+    );
+
+    fun getEvolutionOptions(currentGrade: Grade): List<ProfessionEvolution> {
+        return when (this) {
+            NONE -> emptyList()
+            WEAPONSMITH -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Master Forgewright", "Craft weapons that hum with latent power"),
+                    ProfessionEvolution("Siege Engineer", "Build weapons of war, not just war's weapons")
+                )
+                else -> emptyList()
+            }
+            ARMORSMITH -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Wardsmith", "Armor that protects against magic and blade alike"),
+                    ProfessionEvolution("Living Armorer", "Craft armor that grows with its wearer")
+                )
+                else -> emptyList()
+            }
+            ALCHEMIST -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Transmuter", "Change one substance into another at will"),
+                    ProfessionEvolution("Plague Doctor", "Poisons and cures — two sides of the same flask")
+                )
+                else -> emptyList()
+            }
+            ENCHANTER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Artifex", "Create magical items from raw mana"),
+                    ProfessionEvolution("Disenchanter", "Strip and recombine enchantments")
+                )
+                else -> emptyList()
+            }
+            RUNECRAFTER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Sigil Master", "Runes that rewrite reality's rules"),
+                    ProfessionEvolution("Tattoo Artist", "Inscribe power directly onto living flesh")
+                )
+                else -> emptyList()
+            }
+            COOK -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Feast Keeper", "Feed armies. Your meals grant lasting power"),
+                    ProfessionEvolution("Monster Chef", "Rare ingredients unlock impossible recipes")
+                )
+                else -> emptyList()
+            }
+            HERBALIST -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Druid Botanist", "Plants grow at your command"),
+                    ProfessionEvolution("Toxicologist", "Extract the deadliest compounds nature offers")
+                )
+                else -> emptyList()
+            }
+            MINER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Deep Delver", "Find veins in dimensions others can't reach"),
+                    ProfessionEvolution("Crystal Shaper", "Raw gems become conduits of power")
+                )
+                else -> emptyList()
+            }
+            SCAVENGER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Relic Hunter", "Find artifacts hidden by the System itself"),
+                    ProfessionEvolution("Salvage Savant", "Reconstruct destroyed items from fragments")
+                )
+                else -> emptyList()
+            }
+            SCRIBE -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Lorekeeper", "Written words carry binding power"),
+                    ProfessionEvolution("Scroll Weaver", "Create spell scrolls usable by anyone")
+                )
+                else -> emptyList()
+            }
+            HEALER_PROF -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Combat Surgeon", "Operate mid-battle. Scalpel in one hand, sword in the other"),
+                    ProfessionEvolution("Plague Warden", "Prevent and cure what magic cannot touch")
+                )
+                else -> emptyList()
+            }
+            BUILDER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Architect", "Design structures the System reinforces"),
+                    ProfessionEvolution("Siege Breaker", "What you build, you can also tear down")
+                )
+                else -> emptyList()
+            }
+            MERCHANT -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Trade Baron", "Your network spans dimensions"),
+                    ProfessionEvolution("Black Marketeer", "Access to items that shouldn't exist")
+                )
+                else -> emptyList()
+            }
+            LEATHERWORKER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Hide Whisperer", "Monster hides retain their creature's abilities"),
+                    ProfessionEvolution("Skin Binder", "Bind enchantments into leather at the molecular level")
+                )
+                else -> emptyList()
+            }
+            JEWELER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Gem Resonator", "Gems amplify magic channeled through them"),
+                    ProfessionEvolution("Soul Setter", "Trap essences in jewelry for permanent buffs")
+                )
+                else -> emptyList()
+            }
+            TINKERER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Machinist", "Build autonomous constructs that fight and build"),
+                    ProfessionEvolution("Trap Master", "Your devices reshape battlefields before combat begins")
+                )
+                else -> emptyList()
+            }
+            TAILOR -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Thread Weaver", "Cloth armor that rivals plate through enchanted fibers"),
+                    ProfessionEvolution("Banner Smith", "Craft war banners that buff allies in range")
+                )
+                else -> emptyList()
+            }
+            HUNTER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Trophy Hunter", "Monster parts you harvest carry residual power"),
+                    ProfessionEvolution("Warden", "Mark territory. Nothing enters without you knowing")
+                )
+                else -> emptyList()
+            }
+            LUMBERJACK -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Heartwood Cutter", "Harvest living wood that still grows after shaping"),
+                    ProfessionEvolution("Demolisher", "Bring down structures — and the things hiding in them")
+                )
+                else -> emptyList()
+            }
+            FISHER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Deep Angler", "Fish in waters between dimensions"),
+                    ProfessionEvolution("Tide Reader", "Predict weather, currents, and what swims below")
+                )
+                else -> emptyList()
+            }
+            CARTOGRAPHER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Pathfinder", "Your maps reveal hidden passages the System tried to erase"),
+                    ProfessionEvolution("Rift Mapper", "Chart dimensional boundaries and predict incursions")
+                )
+                else -> emptyList()
+            }
+            FARMER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Mana Cultivator", "Grow crops that channel pure System energy"),
+                    ProfessionEvolution("Grove Keeper", "Your farmland becomes a living defensive structure")
+                )
+                else -> emptyList()
+            }
+            BREWER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Elixir Master", "Brew concoctions that temporarily grant skills"),
+                    ProfessionEvolution("Spirit Distiller", "Extract monster essences into drinkable power")
+                )
+                else -> emptyList()
+            }
+            BEAST_TAMER -> when (currentGrade) {
+                Grade.D_GRADE -> listOf(
+                    ProfessionEvolution("Pack Leader", "Command multiple beasts as a coordinated unit"),
+                    ProfessionEvolution("Symbiont", "Merge temporarily with your bonded creature")
+                )
+                else -> emptyList()
+            }
+        }
+    }
+
+    companion object {
+        fun byCategory(): Map<ProfessionCategory, List<Profession>> {
+            return values()
+                .filter { it != NONE }
+                .groupBy { it.category }
+        }
+
+        fun selectableProfessions(): List<Profession> = values().filter { it != NONE }
+    }
+}
+
+@Serializable
+enum class ProfessionCategory(val displayName: String) {
+    NONE("None"),
+    CRAFTING("Crafting"),
+    GATHERING("Gathering"),
+    UTILITY("Utility")
+}
+
+@Serializable
+internal data class ProfessionEvolution(
+    val name: String,
+    val description: String,
+    internal val statModifiers: Stats = Stats(0, 0, 0, 0, 0, 0)
+)
 
 /**
  * Evolution choice at tier-up

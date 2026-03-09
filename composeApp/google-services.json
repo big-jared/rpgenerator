@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "931553644155",
+    "project_id": "rpgenerator-f89d6",
+    "storage_bucket": "rpgenerator-f89d6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:931553644155:android:1c06c326ce68442e3c9cde",
+        "android_client_info": {
+          "package_name": "org.bigboyapps.rngenerator"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "931553644155-alocsgbpekuf1g8he08damob7ov6qe7h.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "org.bigboyapps.rngenerator",
+            "certificate_hash": "6e0b69493ff5495d9b89d3885be65215a8152213"
+          }
+        },
+        {
+          "client_id": "931553644155-ot19ogbgohlvh4r4pgbn6h8nnl6bm9sk.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDJxLI_VrqH2my2LUFFCG_xeFqD3dYGDjI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "931553644155-274op5ebrm851j52phlno8r1d66bpfgh.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

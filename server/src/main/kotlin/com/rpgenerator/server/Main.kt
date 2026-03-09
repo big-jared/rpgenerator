@@ -6,14 +6,51 @@ import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import com.rpgenerator.core.api.CharacterCreationOptions
+import com.rpgenerator.core.api.ToolDefinition
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import kotlin.time.Duration.Companion.seconds
+
+@kotlinx.serialization.Serializable
+data class CreateGameRequest(
+    val name: String? = null,
+    val backstory: String? = null,
+    val systemType: String? = null,
+    val seedId: String? = null
+)
+
+@kotlinx.serialization.Serializable
+data class ToolExecutionRequest(
+    val name: String,
+    val args: Map<String, String> = emptyMap()
+)
+
+@kotlinx.serialization.Serializable
+data class GameSetupResponse(
+    val systemPrompt: String,
+    val toolDefinitions: List<ToolDefinition>,
+    val voiceName: String? = null
+)
+
+@kotlinx.serialization.Serializable
+data class ToolExecutionResponse(
+    val success: Boolean,
+    val data: JsonObject = JsonObject(emptyMap()),
+    val events: List<JsonObject> = emptyList(),
+    val error: String? = null,
+    val imageBase64: String? = null,
+    val imageMimeType: String? = null
+)
 
 private fun buildImageGalleryHtml(images: List<McpHandler.GeneratedImage>): String = """
 <!DOCTYPE html>
@@ -94,6 +131,14 @@ setInterval(() => fetch('/debug/gallery/json').then(r=>r.json()).then(imgs => {
 fun main() {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
     println("Starting RPGenerator server on port $port")
+
+    val isDev = System.getenv("KTOR_DEVELOPMENT")?.toBoolean() ?: false
+    if (isDev) println("Development mode ON")
+
+    // Log LLM config
+    val llmProvider = System.getenv("LLM_PROVIDER") ?: "gemini"
+    val llmModel = System.getenv("LLM_MODEL") ?: "(default)"
+    println("LLM provider: $llmProvider, model: $llmModel")
 
     embeddedServer(Netty, port = port) {
         install(ContentNegotiation) {
@@ -210,11 +255,125 @@ fun main() {
                     call.respond(HttpStatusCode.Unauthorized)
                     return@post
                 }
-                val session = GameSessionManager.createSession()
+                val body = try {
+                    call.receive<CreateGameRequest>()
+                } catch (_: Exception) {
+                    CreateGameRequest()
+                }
+                val session = GameSessionManager.createSession(
+                    seedId = body.seedId ?: "integration",
+                    characterCreation = CharacterCreationOptions(
+                        name = body.name ?: "Adventurer",
+                        backstory = body.backstory
+                    )
+                )
                 call.respondText(
                     """{"sessionId": "${session.id}"}""",
                     ContentType.Application.Json
                 )
+            }
+
+            // Get game state for a session
+            get("/api/game/{sessionId}/state") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@get
+                }
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val state = session.game.getState()
+                call.respond(state)
+            }
+
+            // Execute a tool on a game session (for client-side Gemini)
+            post("/api/game/{sessionId}/tool") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@post
+                }
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@post call.respond(HttpStatusCode.NotFound)
+
+                val body = call.receive<ToolExecutionRequest>()
+                val argsMap: Map<String, Any?> = body.args
+                val result = session.game.executeTool(body.name, argsMap)
+
+                // For image generation tools, generate the image synchronously
+                // and include base64 data in the response
+                var imageBase64: String? = null
+                var imageMimeType: String? = null
+                if (body.name == "generate_scene_art" && result.success) {
+                    try {
+                        val description = body.args["description"] ?: ""
+                        val state = session.game.getState()
+                        val imgResult = session.imageService.generateSceneArt(
+                            SceneArtRequest(
+                                locationName = state.location,
+                                description = description
+                            )
+                        )
+                        if (imgResult is ImageResult.Success) {
+                            imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
+                            imageMimeType = imgResult.mimeType
+                        }
+                    } catch (e: Exception) {
+                        // Image generation failed — non-fatal, respond without image
+                    }
+                } else if (body.name == "generate_portrait" && result.success) {
+                    try {
+                        val description = body.args["description"] ?: ""
+                        val imgResult = session.imageService.generatePortrait(
+                            PortraitRequest(
+                                name = "",
+                                appearance = description
+                            )
+                        )
+                        if (imgResult is ImageResult.Success) {
+                            imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
+                            imageMimeType = imgResult.mimeType
+                        }
+                    } catch (e: Exception) {
+                        // Portrait generation failed — non-fatal
+                    }
+                }
+
+                call.respond(ToolExecutionResponse(
+                    success = result.success,
+                    data = result.data,
+                    events = result.events.map { event ->
+                        Json.encodeToJsonElement(com.rpgenerator.core.api.GameEvent.serializer(), event)
+                            .jsonObject
+                    },
+                    error = result.error,
+                    imageBase64 = imageBase64,
+                    imageMimeType = imageMimeType
+                ))
+            }
+
+            // Get system prompt + tool definitions for client-side Gemini setup
+            get("/api/game/{sessionId}/setup") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@get
+                }
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+
+                val prompt = session.game.getSystemPrompt()
+                val tools = session.game.getToolDefinitions()
+                val voice = session.game.getCompanionVoice()
+                val response = GameSetupResponse(
+                    systemPrompt = prompt,
+                    toolDefinitions = tools,
+                    voiceName = voice
+                )
+                call.respond(response)
             }
 
             // ── Debug Image Gallery ──────────────────────────────────

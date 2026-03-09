@@ -1,6 +1,8 @@
 package com.rpgenerator.core.api
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Active game instance.
@@ -44,4 +46,52 @@ abstract class Game internal constructor(
      * beyond what getState() exposes (e.g. narrator context, story foundation).
      */
     open fun getDebugState(): Map<String, String> = emptyMap()
+
+    // ── Tool execution API ─────────────────────────────────────────
+
+    /**
+     * Execute a tool call against the real game state.
+     * Used by server to route Gemini Live tool calls through the game engine.
+     */
+    abstract suspend fun executeTool(name: String, args: Map<String, Any?>): ToolCallResult
+
+    /**
+     * Get tool definitions for LLM function calling.
+     * Returns a list of tool name/description/parameter info.
+     */
+    abstract fun getToolDefinitions(): List<ToolDefinition>
+
+    /**
+     * Get the system prompt for the GM agent, built from current game state.
+     */
+    abstract fun getSystemPrompt(): String
+
+    /**
+     * Get the Gemini voice name for the companion character.
+     * Maps to a PrebuiltVoiceConfig voice name.
+     */
+    open fun getCompanionVoice(): String = "Kore"
 }
+
+@Serializable
+data class ToolCallResult(
+    val success: Boolean,
+    val data: JsonObject = JsonObject(emptyMap()),
+    val events: List<GameEvent> = emptyList(),
+    val error: String? = null
+)
+
+@Serializable
+data class ToolDefinition(
+    val name: String,
+    val description: String,
+    val parameters: List<ToolParameterDef> = emptyList()
+)
+
+@Serializable
+data class ToolParameterDef(
+    val name: String,
+    val type: String,
+    val description: String,
+    val required: Boolean = true
+)

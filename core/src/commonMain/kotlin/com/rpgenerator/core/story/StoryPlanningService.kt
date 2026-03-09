@@ -156,7 +156,7 @@ internal class StoryPlanningService(
                 "narrativeHooks": ["Hook 1 tied to player backstory", "Hook 2 for future conflict", "Hook 3 mystery element"]
             }
 
-            Make the systemName evocative. "The Axiom" or "INTEGRATION PROTOCOL 7" or "The Weave" - not just "System".
+            Make the systemName evocative. "The Axiom" or "INTEGRATION PROTOCOL 7" or "The Loom" - not just "System".
             The uniqueMechanic should be something that creates interesting story possibilities.
             The centralMystery should be something the player will slowly uncover across their journey.
             The narrativeHooks should connect to the player's backstory: "$backstory"
@@ -480,7 +480,7 @@ internal class StoryPlanningService(
                 SystemType.DUNGEON_DELVE -> "The Labyrinth"
                 SystemType.ARCANE_ACADEMY -> "The Collegium"
                 SystemType.TABLETOP_CLASSIC -> "The Realm"
-                SystemType.EPIC_JOURNEY -> "The Weave"
+                SystemType.EPIC_JOURNEY -> "The Loom"
                 SystemType.HERO_AWAKENING -> "The Catalyst"
             },
             systemPersonality = "Cold and calculating, but occasionally cryptic",

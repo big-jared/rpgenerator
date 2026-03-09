@@ -7,6 +7,9 @@ import com.rpgenerator.core.persistence.GameDatabase
 import com.rpgenerator.core.persistence.GameRepository
 import com.rpgenerator.core.persistence.PlotGraphRepository
 import com.rpgenerator.core.story.StoryFoundation
+import com.rpgenerator.core.agents.GMPromptBuilder
+import com.rpgenerator.core.tools.LoreQueryHandler
+import com.rpgenerator.core.tools.UnifiedToolContractImpl
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
 import com.rpgenerator.core.util.currentTimeMillis
@@ -23,7 +26,8 @@ internal class GameImpl(
     initialState: GameState
 ) : Game(gameId, llm) {
 
-    private val orchestrator = GameOrchestrator(llm, initialState)
+    private val toolContract = UnifiedToolContractImpl()
+    private val orchestrator = GameOrchestrator(llm, initialState, toolContract)
     private var sessionStartTime = currentTimeMillis()
     private var sessionPlaytime = 0L
     private var plotGraphSaved = false
@@ -67,7 +71,8 @@ internal class GameImpl(
                 energy = state.characterSheet.resources.currentEnergy,
                 maxEnergy = state.characterSheet.resources.maxEnergy,
                 backstory = state.backstory,
-                playerClass = if (state.characterSheet.playerClass == com.rpgenerator.core.domain.PlayerClass.NONE) "" else state.characterSheet.playerClass.displayName
+                playerClass = if (state.characterSheet.playerClass == com.rpgenerator.core.domain.PlayerClass.NONE) "" else state.characterSheet.playerClass.displayName,
+                playerProfession = if (state.characterSheet.profession == com.rpgenerator.core.domain.Profession.NONE) "" else state.characterSheet.profession.displayName
             ),
             location = state.currentLocation.name,
             currentScene = state.currentLocation.description,
@@ -198,5 +203,55 @@ internal class GameImpl(
 
     internal fun getStoryFoundation(): StoryFoundation? {
         return orchestrator.getStoryFoundation()
+    }
+
+    // ── Tool execution API ─────────────────────────────────────────
+
+    override suspend fun executeTool(name: String, args: Map<String, Any?>): ToolCallResult {
+        val state = orchestrator.getState()
+        val outcome = toolContract.executeTool(name, args, state)
+
+        // Apply state mutations back to the orchestrator
+        if (outcome.newState != null) {
+            orchestrator.gameState = outcome.newState!!
+        }
+
+        return ToolCallResult(
+            success = outcome.success,
+            data = outcome.data,
+            events = outcome.events,
+            error = outcome.error
+        )
+    }
+
+    override fun getToolDefinitions(): List<ToolDefinition> {
+        return toolContract.getToolDefinitions().map { def ->
+            ToolDefinition(
+                name = def.name,
+                description = def.description,
+                parameters = def.parameters.map { param ->
+                    ToolParameterDef(
+                        name = param.name,
+                        type = param.type,
+                        description = param.description,
+                        required = param.required
+                    )
+                }
+            )
+        }
+    }
+
+    override fun getSystemPrompt(): String {
+        return GMPromptBuilder.buildCompanionPrompt(orchestrator.getState())
+    }
+
+    override fun getCompanionVoice(): String {
+        return when (orchestrator.getState().seedId) {
+            "integration" -> "Charon"  // Deep, gruff — fits Hank the man-fairy
+            "tabletop" -> "Puck"       // Bright, energetic — fits Pip the ink sprite
+            "crawler" -> "Fenrir"      // Hushed, tense — fits Glitch the drone
+            "quiet_life" -> "Kore"     // Warm, gentle — fits Bramble the forest spirit
+            else -> "Kore"
+        }
     }
 }

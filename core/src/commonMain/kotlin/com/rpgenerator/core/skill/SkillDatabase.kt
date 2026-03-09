@@ -714,6 +714,11 @@ internal object SkillDatabase {
     fun getStarterSkills(className: String): List<Skill> = emptyList()
 
     /**
+     * Look up a skill by its ID. Alias for getSkill().
+     */
+    fun getSkillById(id: String): Skill? = getSkill(id)
+
+    /**
      * Create a dynamically generated skill (used by AI skill generation).
      */
     fun createGeneratedSkill(
@@ -967,4 +972,14 @@ internal object SkillDatabase {
      */
     fun getFusionRecipe(id: String): SkillFusionRecipe? =
         fusionRecipes.find { it.id == id }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC ACCESSORS (for UnifiedToolContract / LoreQueryHandler)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fun queryAll(): Map<String, Skill> = allSkills
+
+    fun queryFusionRecipes(): List<SkillFusionRecipe> = fusionRecipes
+
+    fun queryInsightThresholds(): List<InsightThreshold> = insightThresholds
 }

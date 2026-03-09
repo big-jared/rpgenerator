@@ -2,7 +2,7 @@
   "mcpServers": {
     "rpgenerator": {
       "type": "http",
-      "url": "https://rpgenerator-mcp.jaredguttromson.workers.dev/mcp"
+      "url": "http://localhost:8080/mcp"
     }
   }
 }

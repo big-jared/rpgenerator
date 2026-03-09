@@ -50,7 +50,8 @@ data class PlayerStats(
     val energy: Int,
     val maxEnergy: Int,
     val backstory: String = "",
-    val playerClass: String = ""
+    val playerClass: String = "",
+    val playerProfession: String = ""
 )
 
 @Serializable

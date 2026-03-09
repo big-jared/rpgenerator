@@ -1,8 +1,20 @@
 package com.rpgenerator.core.events
 
 import com.rpgenerator.core.api.GameEvent
-import com.rpgenerator.core.tools.EventHighlight
-import com.rpgenerator.core.tools.EventSummaryResult
+
+internal data class EventHighlight(
+    val category: String,
+    val importance: String,
+    val text: String,
+    val timestamp: Long
+)
+
+internal data class EventSummaryResult(
+    val totalEvents: Long,
+    val categoryCounts: Map<String, Long>,
+    val recentHighlights: List<EventHighlight>,
+    val summary: String
+)
 
 /**
  * Utility functions for working with the event system.

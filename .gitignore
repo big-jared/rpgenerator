@@ -50,6 +50,13 @@ cli/music/*.sf2
 cli/music/*.mid
 .rpgenerator-debug/
 
+# Kotlin build metadata
+.kotlin/
+/com/
+
+# Xcode user data
+xcuserdata/
+
 # Claude Code local settings
 .claude/settings.local.json
 

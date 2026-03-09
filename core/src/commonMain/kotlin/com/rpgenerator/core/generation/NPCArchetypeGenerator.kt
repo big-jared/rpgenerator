@@ -47,6 +47,7 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
         playerName: String,
         systemType: com.rpgenerator.core.api.SystemType,
         playerLevel: Int,
+        locationId: String = "tutorial_zone_alpha",
         seed: Long = currentTimeMillis()
     ): NPC {
         val name = NameGenerator.generateAdministratorName(seed)
@@ -93,7 +94,7 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
             response,
             name,
             NPCArchetype.TRAINER,
-            "tutorial_zone_alpha",
+            locationId,
             seed
         )
     }

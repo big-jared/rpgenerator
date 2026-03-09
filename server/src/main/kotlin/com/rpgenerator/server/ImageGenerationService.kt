@@ -5,6 +5,12 @@ import com.google.genai.types.GenerateImagesConfig
 import com.google.genai.types.PersonGeneration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import javax.imageio.IIOImage
+import javax.imageio.ImageIO
+import javax.imageio.ImageWriteParam
 
 /**
  * Generates images using Gemini's Imagen API.
@@ -58,7 +64,8 @@ class ImageGenerationService(
     private suspend fun generateImage(
         prompt: String,
         negativePrompt: String,
-        aspectRatio: String
+        aspectRatio: String,
+        maxDimension: Int = 512
     ): ImageResult {
         return try {
             val config = GenerateImagesConfig.builder()
@@ -76,9 +83,10 @@ class ImageGenerationService(
             if (images != null && images.isNotEmpty()) {
                 val imageBytes = images[0].imageBytes()
                 if (imageBytes.isPresent) {
+                    val compressed = compressImage(imageBytes.get(), maxDimension)
                     ImageResult.Success(
-                        imageData = imageBytes.get(),
-                        mimeType = "image/png",
+                        imageData = compressed,
+                        mimeType = "image/jpeg",
                         prompt = prompt
                     )
                 } else {
@@ -92,25 +100,64 @@ class ImageGenerationService(
         }
     }
 
+    /**
+     * Resize to maxDimension and compress to JPEG at 80% quality.
+     */
+    private fun compressImage(pngBytes: ByteArray, maxDimension: Int): ByteArray {
+        val original = ImageIO.read(ByteArrayInputStream(pngBytes))
+            ?: return pngBytes // fallback if decode fails
+
+        // Calculate new dimensions preserving aspect ratio
+        val scale = maxDimension.toDouble() / maxOf(original.width, original.height)
+        val newWidth: Int
+        val newHeight: Int
+        if (scale < 1.0) {
+            newWidth = (original.width * scale).toInt()
+            newHeight = (original.height * scale).toInt()
+        } else {
+            newWidth = original.width
+            newHeight = original.height
+        }
+
+        // Resize
+        val resized = BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB)
+        val g = resized.createGraphics()
+        g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+        g.drawImage(original, 0, 0, newWidth, newHeight, null)
+        g.dispose()
+
+        // Compress to JPEG
+        val out = ByteArrayOutputStream()
+        val writer = ImageIO.getImageWritersByFormatName("jpeg").next()
+        val param = writer.defaultWriteParam.apply {
+            compressionMode = ImageWriteParam.MODE_EXPLICIT
+            compressionQuality = 0.80f
+        }
+        writer.output = ImageIO.createImageOutputStream(out)
+        writer.write(null, IIOImage(resized, null, null), param)
+        writer.dispose()
+
+        return out.toByteArray()
+    }
+
     // ── Prompt Engineering ────────────────────────────────────────────
 
     private fun buildPortraitPrompt(req: PortraitRequest): String = buildString {
         append(STYLE_PREFIX)
-        append("Character portrait, ")
 
         // Framing
         append(when (req.framing) {
-            PortraitFraming.BUST -> "bust shot from chest up, "
+            PortraitFraming.BUST -> "portrait from chest up, "
             PortraitFraming.FULL_BODY -> "full body standing pose, "
-            PortraitFraming.CLOSE_UP -> "dramatic close-up face shot, "
+            PortraitFraming.CLOSE_UP -> "dramatic close-up of face, "
         })
 
-        // Character identity
-        append("of ${req.name}")
+        // Class archetype (not the name — avoids text generation)
         if (req.characterClass != null) {
-            append(", a ${req.characterClass}")
+            append("a ${req.characterClass}, ")
+        } else {
+            append("a fantasy adventurer, ")
         }
-        append(". ")
 
         // Appearance
         if (req.appearance != null) {
@@ -119,12 +166,12 @@ class ImageGenerationService(
 
         // Equipment/class flavor
         if (req.equipment != null) {
-            append("Wearing/carrying: ${req.equipment}. ")
+            append("Wearing ${req.equipment}. ")
         }
 
         // Mood/expression
         val mood = req.mood ?: "determined"
-        append("Expression: $mood. ")
+        append("${mood} expression. ")
 
         // Tier/power level visual cues
         if (req.powerTier != null) {
@@ -239,28 +286,29 @@ class ImageGenerationService(
     companion object {
         // Consistent art style anchor — keeps all images in the same visual family
         private const val STYLE_PREFIX =
-            "Digital fantasy art, painterly style with rich colors and dramatic lighting, " +
-            "LitRPG game illustration, high detail, "
+            "Digital painting, fantasy concept art style, rich colors, dramatic cinematic lighting, " +
+            "no text, no words, no letters, no writing, no labels, no captions, "
 
         private const val QUALITY_SUFFIX =
-            "Masterful composition, professional fantasy game art quality, " +
-            "rich color palette, dramatic lighting."
+            "Sharp focus, professional illustration quality, painterly brushwork, " +
+            "rich color palette, volumetric lighting, dark moody background."
 
         private const val PORTRAIT_NEGATIVE =
             "photo, photograph, realistic photo, selfie, " +
-            "blurry, low quality, deformed, extra limbs, " +
-            "text, watermark, signature, frame, border, " +
-            "nsfw, nude, gore, blood splatter"
+            "blurry, low quality, deformed, extra limbs, extra fingers, " +
+            "text, words, letters, writing, caption, label, title, name, watermark, signature, " +
+            "frame, border, nsfw, nude, gore"
 
         private const val SCENE_NEGATIVE =
             "photo, photograph, realistic photo, " +
             "blurry, low quality, deformed, " +
-            "text, watermark, signature, UI elements, " +
+            "text, words, letters, writing, watermark, signature, UI elements, " +
             "nsfw, gore"
 
         private const val ITEM_NEGATIVE =
             "photo, photograph, hands holding item, person, character, " +
-            "blurry, low quality, text, watermark, " +
+            "blurry, low quality, " +
+            "text, words, letters, writing, watermark, " +
             "cluttered background, multiple items"
     }
 }

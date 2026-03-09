@@ -69,7 +69,8 @@ internal enum class NPCArchetype {
     VILLAGER,
     NOBLE,
     SCHOLAR,
-    WANDERER
+    WANDERER,
+    NAMED_PEER // Tutorial peer with deep character data from WorldSeed
 }
 
 @Serializable

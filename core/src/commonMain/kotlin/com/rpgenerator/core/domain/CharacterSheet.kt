@@ -22,6 +22,8 @@ internal data class CharacterSheet(
     val currentGrade: Grade = Grade.E_GRADE,
     val playerClass: PlayerClass = PlayerClass.NONE,
     val classEvolutionPath: List<String> = emptyList(), // Track evolution history
+    val profession: Profession = Profession.NONE,
+    val professionEvolutionPath: List<String> = emptyList(),
     val unspentStatPoints: Int = 0,
     // Skill acquisition tracking
     val actionInsightTracker: ActionInsightTracker = ActionInsightTracker(),
@@ -30,7 +32,10 @@ internal data class CharacterSheet(
     fun xpToNextLevel(): Long = (level + 1) * 100L
 
     fun effectiveStats(): Stats {
-        var effective = baseStats.copy()
+        // Start with base stats, ensuring defense has a floor from CON/DEX
+        var effective = baseStats.copy(
+            defense = if (baseStats.defense == 0) baseStats.baseDefense() else baseStats.defense
+        )
 
         // Apply equipment bonuses
         equipment.weapon?.let { weapon ->
@@ -135,6 +140,23 @@ internal data class CharacterSheet(
             playerClass = chosenClass,
             baseStats = newStats,
             classEvolutionPath = listOf(chosenClass.displayName)
+        )
+    }
+
+    fun chooseProfession(chosenProfession: Profession): CharacterSheet {
+        val newStats = Stats(
+            strength = baseStats.strength + chosenProfession.statBonuses.strength,
+            dexterity = baseStats.dexterity + chosenProfession.statBonuses.dexterity,
+            constitution = baseStats.constitution + chosenProfession.statBonuses.constitution,
+            intelligence = baseStats.intelligence + chosenProfession.statBonuses.intelligence,
+            wisdom = baseStats.wisdom + chosenProfession.statBonuses.wisdom,
+            charisma = baseStats.charisma + chosenProfession.statBonuses.charisma
+        )
+
+        return copy(
+            profession = chosenProfession,
+            baseStats = newStats,
+            professionEvolutionPath = listOf(chosenProfession.displayName)
         )
     }
 
@@ -365,10 +387,13 @@ internal data class Stats(
     val charisma: Int = 10,
     val defense: Int = 0
 ) {
+    /** Base defense derived from CON and DEX — supplements equipment armor. Must match CharacterCreationService formula. */
+    fun baseDefense(): Int = 10 + (dexterity / 2) + (constitution / 4)
+
     fun increaseOnLevelUp(levels: Int): Stats {
         // Each level grants +2 to two random stats and +1 to others
         // For POC, we'll use a simple pattern: +2 STR/CON, +1 others per level
-        return copy(
+        val newStats = copy(
             strength = strength + (2 * levels),
             dexterity = dexterity + levels,
             constitution = constitution + (2 * levels),
@@ -376,6 +401,7 @@ internal data class Stats(
             wisdom = wisdom + levels,
             charisma = charisma + levels
         )
+        return newStats.copy(defense = newStats.baseDefense())
     }
 }
 
@@ -481,15 +507,21 @@ internal data class Inventory(
     val maxSlots: Int = 50
 ) {
     fun addItem(item: InventoryItem): Inventory {
+        // First try exact ID match
         val existing = items[item.id]
-        return if (existing != null) {
-            copy(items = items + (item.id to existing.copy(quantity = existing.quantity + item.quantity)))
+        if (existing != null) {
+            return copy(items = items + (item.id to existing.copy(quantity = existing.quantity + item.quantity)))
+        }
+        // Then try to stack by name (same name + same rarity + stackable = merge)
+        val existingByName = items.values.find { it.name == item.name && it.rarity == item.rarity && it.stackable }
+        if (existingByName != null) {
+            return copy(items = items + (existingByName.id to existingByName.copy(quantity = existingByName.quantity + item.quantity)))
+        }
+        // New item — add if space available
+        return if (items.size >= maxSlots) {
+            this // Inventory full
         } else {
-            if (items.size >= maxSlots) {
-                this // Inventory full
-            } else {
-                copy(items = items + (item.id to item))
-            }
+            copy(items = items + (item.id to item))
         }
     }
 
@@ -516,11 +548,19 @@ internal data class InventoryItem(
     val type: ItemType,
     val quantity: Int = 1,
     val stackable: Boolean = true,
-    val rarity: com.rpgenerator.core.api.ItemRarity = com.rpgenerator.core.api.ItemRarity.COMMON
+    val rarity: com.rpgenerator.core.api.ItemRarity = com.rpgenerator.core.api.ItemRarity.COMMON,
+    // Equipment stats (only relevant for WEAPON, ARMOR, ACCESSORY types)
+    val baseDamage: Int = 0,
+    val defenseBonus: Int = 0,
+    val statBonuses: Stats = Stats(),
+    val requiredLevel: Int = 1
 )
 
 @Serializable
 internal enum class ItemType {
+    WEAPON,
+    ARMOR,
+    ACCESSORY,
     CONSUMABLE,
     QUEST_ITEM,
     CRAFTING_MATERIAL,

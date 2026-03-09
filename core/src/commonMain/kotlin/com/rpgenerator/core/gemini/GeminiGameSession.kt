@@ -63,7 +63,7 @@ enum class SessionState {
  * Configuration for starting a Gemini Live session.
  */
 data class GeminiSessionConfig(
-    val modelId: String = "gemini-2.5-flash-native-audio-preview",
+    val modelId: String = "gemini-2.5-flash-native-audio-preview-12-2025",
     val systemPrompt: String,
     val tools: List<GeminiToolDeclaration>,
     val voiceConfig: VoiceConfig = VoiceConfig(),

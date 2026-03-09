@@ -2,6 +2,10 @@ package com.rpgenerator.core.test
 
 import com.rpgenerator.core.api.AgentStream
 import com.rpgenerator.core.api.LLMInterface
+import com.rpgenerator.core.api.LLMToolCall
+import com.rpgenerator.core.api.LLMToolDef
+import com.rpgenerator.core.api.LLMToolResult
+import com.rpgenerator.core.api.ToolExecutor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 
@@ -9,16 +13,85 @@ class MockLLMInterface(
     private val intentOverride: String? = null,
     private val malformed: Boolean = false
 ) : LLMInterface {
+    /** Track agents created by prompt type for testing the 3-phase pipeline */
+    val createdAgents = mutableListOf<MockAgentStream>()
+
     override fun startAgent(systemPrompt: String): AgentStream {
-        return MockAgentStream(intentOverride, malformed)
+        val agentType = when {
+            systemPrompt.contains("CLASSIFY INTENT") || systemPrompt.contains("DECIDE mode") -> AgentType.DECIDE
+            systemPrompt.contains("CRITICAL NARRATION RULES") -> AgentType.NARRATE
+            else -> AgentType.LEGACY
+        }
+        val agent = MockAgentStream(intentOverride, malformed, agentType)
+        createdAgents.add(agent)
+        return agent
     }
 }
 
+enum class AgentType { DECIDE, NARRATE, LEGACY }
+
 class MockAgentStream(
     private val intentOverride: String? = null,
-    private val malformed: Boolean = false
+    private val malformed: Boolean = false,
+    val agentType: AgentType = AgentType.LEGACY
 ) : AgentStream {
+    /** Configure tool calls that sendMessageWithTools should make before returning. */
+    var toolCallsToMake: List<LLMToolCall> = emptyList()
+
+    /** Records tool results returned by the executor during sendMessageWithTools. */
+    val recordedToolResults: MutableList<LLMToolResult> = mutableListOf()
+
+    /** Track all messages received */
+    val receivedMessages: MutableList<String> = mutableListOf()
+
+    override suspend fun sendMessageWithTools(
+        message: String,
+        tools: List<LLMToolDef>,
+        executor: ToolExecutor
+    ): Flow<String> {
+        receivedMessages.add(message)
+        if (toolCallsToMake.isEmpty()) {
+            // For DECIDE agent, return empty (prose is discarded anyway)
+            if (agentType == AgentType.DECIDE) {
+                return flowOf("")
+            }
+            return sendMessage(message)
+        }
+        // Execute each configured tool call
+        for (call in toolCallsToMake) {
+            val result = executor(call)
+            recordedToolResults.add(result)
+        }
+        // For DECIDE agent, return empty (prose is discarded)
+        if (agentType == AgentType.DECIDE) {
+            return flowOf("")
+        }
+        // Return mock narrative after tool calls (legacy path)
+        return flowOf("Mock narrative response after tool calls. ")
+    }
+
     override suspend fun sendMessage(message: String): Flow<String> {
+        receivedMessages.add(message)
+
+        // NARRATE agent: return narration based on turn summary
+        if (agentType == AgentType.NARRATE) {
+            return when {
+                message.contains("COMBAT ROUND") && message.contains("VICTORY") ->
+                    flowOf("Your blade finds its mark. The creature crumbles. Victory is yours.")
+                message.contains("COMBAT ROUND") ->
+                    flowOf("Steel meets flesh. The fight continues, your breathing ragged but steady.")
+                message.contains("Moved to") ->
+                    flowOf("You step into the new area, senses alert for danger.")
+                message.contains("NPC appeared") ->
+                    flowOf("A figure emerges from the shadows, regarding you with cautious interest.")
+                message.contains("No tools executed") ->
+                    flowOf("The world breathes around you. Silence, except for your own heartbeat.")
+                else ->
+                    flowOf("The moment passes, leaving only the weight of what happened.")
+            }
+        }
+
+        // Legacy agent responses
         return when {
             malformed && message.contains("Analyze this action") -> {
                 flowOf("not valid json at all")
@@ -28,7 +101,6 @@ class MockAgentStream(
                 flowOf("""{"intent": "$intent", "target": "test-target", "context": "Test context"}""")
             }
             message.contains("PLAN THIS SCENE") -> {
-                // GameMaster scene planning — return valid ScenePlan JSON
                 val actionType = detectActionType(message)
                 val target = when (actionType) {
                     "COMBAT" -> "goblin"
@@ -83,8 +155,6 @@ class MockAgentStream(
     }
 
     private fun detectActionType(message: String): String {
-        // Extract just the player input from the GM prompt to avoid matching
-        // keywords in the JSON schema example (e.g., "COMBAT|EXPLORATION|...")
         val playerInput = Regex("""Player Input:\s*"([^"]+)"""").find(message)
             ?.groupValues?.get(1)?.lowercase() ?: message.lowercase()
         return when {
@@ -96,16 +166,13 @@ class MockAgentStream(
     }
 
     private fun extractNPCTarget(message: String): String? {
-        // Try to find NPC names from the "NPCs Present:" section of the GM prompt
         val npcSection = message.substringAfter("NPCs Present:", "")
         if (npcSection.isBlank()) return null
-        // Look for "- Name (Archetype)" pattern
         val nameMatch = Regex("""- (\w+) \(""").find(npcSection)
         return nameMatch?.groupValues?.get(1)
     }
 
     private fun detectIntentFromClassification(message: String): String {
-        // Extract player input from the classification prompt
         val playerInput = Regex("""Player input:\s*"([^"]+)"""").find(message)
             ?.groupValues?.get(1)?.lowercase() ?: message.lowercase()
         val words = playerInput.split("\\s+".toRegex())
@@ -131,8 +198,6 @@ class MockAgentStream(
     }
 
     private fun detectIntent(message: String): String {
-        // Simple keyword matching to simulate what the real AI would do
-        // Real SystemAgent uses LLM to analyze intent
         return when {
             message.contains("attack") || message.contains("fight") -> "COMBAT"
             message.contains("talk") || message.contains("speak") -> "NPC_DIALOGUE"
@@ -143,64 +208,17 @@ class MockAgentStream(
     }
 
     private fun generateNPCDialogue(message: String): Flow<String> {
-        // Extract NPC name and player input from the prompt
-        val npcName = message.lines().find { it.startsWith("Name:") }
-            ?.substringAfter("Name:")?.trim() ?: "NPC"
-
-        val playerSays = message.lines().find { it.startsWith("The player says:") }
-            ?.substringAfter("The player says:")?.trim()?.removeSurrounding("\"") ?: ""
-
-        // Generate contextual response based on archetype and player input
         val response = when {
-            message.contains("MERCHANT") -> {
-                when {
-                    playerSays.contains("buy", ignoreCase = true) ||
-                    playerSays.contains("shop", ignoreCase = true) ->
-                        "Welcome to my shop! I have fine wares for sale. What catches your eye?"
-                    playerSays.contains("sell", ignoreCase = true) ->
-                        "I might be interested in buying your goods. Show me what you have."
-                    else ->
-                        "Greetings, traveler. Looking to trade today?"
-                }
-            }
-            message.contains("QUEST_GIVER") -> {
-                when {
-                    playerSays.contains("quest", ignoreCase = true) ||
-                    playerSays.contains("help", ignoreCase = true) ->
-                        "I'm glad you asked. There's a problem that needs solving, and you look capable enough."
-                    else ->
-                        "These are troubled times. We could use someone with your skills."
-                }
-            }
-            message.contains("GUARD") -> {
-                "State your business here, traveler."
-            }
-            message.contains("INNKEEPER") -> {
-                "Welcome to my inn! Can I get you a room, or perhaps some food and drink?"
-            }
-            message.contains("BLACKSMITH") -> {
-                when {
-                    playerSays.contains("weapon", ignoreCase = true) ||
-                    playerSays.contains("armor", ignoreCase = true) ->
-                        "You've come to the right place. I craft the finest equipment in the region."
-                    else ->
-                        "Need something forged? I can make whatever you need."
-                }
-            }
-            message.contains("ALCHEMIST") -> {
-                "Ah, interested in the alchemical arts? I have potions and elixirs for various needs."
-            }
-            message.contains("SCHOLAR") -> {
-                "Knowledge is the most valuable treasure. What would you like to learn?"
-            }
-            message.contains("WANDERER") -> {
-                "The paths of fate are mysterious, traveler. Our meeting may not be coincidence."
-            }
-            else -> {
-                "Hello there, traveler."
-            }
+            message.contains("MERCHANT") -> "Welcome to my shop! I have fine wares for sale."
+            message.contains("QUEST_GIVER") -> "I'm glad you asked. There's a problem that needs solving."
+            message.contains("GUARD") -> "State your business here, traveler."
+            message.contains("INNKEEPER") -> "Welcome to my inn! Can I get you a room?"
+            message.contains("BLACKSMITH") -> "Need something forged? I can make whatever you need."
+            message.contains("ALCHEMIST") -> "Interested in the alchemical arts? I have potions."
+            message.contains("SCHOLAR") -> "Knowledge is the most valuable treasure."
+            message.contains("WANDERER") -> "The paths of fate are mysterious, traveler."
+            else -> "Hello there, traveler."
         }
-
         return flowOf(response)
     }
 }
