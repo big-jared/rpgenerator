@@ -1,152 +1,179 @@
-# RPGenerator
+# RPGenerator — AI-Powered LitRPG with Voice Companions
 
-A Kotlin Multiplatform library for building AI-powered LitRPG experiences.
+RPGenerator is a game engine that orchestrates multiple AI agents to create dynamic, voice-first LitRPG adventures. Each world comes with a unique companion character who guides the player through the story — a grumpy Brooklyn fairy, an excitable ink sprite, a paranoid camera drone, or a cozy forest spirit.
 
-## Overview
+The engine handles agent orchestration, game state, combat, quests, and narration. You talk to your companion, and the world responds.
 
-RPGenerator is a **game engine library** that handles the complex logic for creating dynamic, AI-driven LitRPG games. It can be integrated into desktop apps, mobile apps, web applications, or Discord bots.
+> **See it in action:** [Playtest transcript — Hank (System Apocalypse)](docs/PLAYTEST_INTEGRATION_1.md)
 
-The library manages:
-- AI agent orchestration (Game Master, Narrator, NPCs)
-- Game state and progression
-- Event streaming and persistence
-- LitRPG mechanics (stats, quests, inventory)
-- Automatic context management for LLM agents
+## How It Works
 
-You bring your own LLM provider and your own I/O (voice, text, VR, whatever), and RPGenerator handles the game.
+```
+┌─────────────────────────────────────┐
+│         Mobile App (Android)        │
+│  Voice input → Gemini Live API      │
+│  Game state ← Server API            │
+└──────────────┬──────────────────────┘
+               │ HTTP / WebSocket
+┌──────────────▼──────────────────────┐
+│        RPGenerator Server           │
+│  Ktor + MCP endpoint (:8080)        │
+│  Game orchestration + persistence   │
+└──────────────┬──────────────────────┘
+               │
+┌──────────────▼──────────────────────┐
+│        RPGenerator Core             │
+│  Agents, game state, mechanics      │
+│  Kotlin Multiplatform (JVM + iOS)   │
+└─────────────────────────────────────┘
+```
+
+The mobile app connects directly to Gemini Live for voice (client-side), and to the server for game state and tool execution. The companion's personality is injected into the Gemini session, so it speaks in character.
+
+### Agents
+
+The engine spawns specialized AI agents as needed. Each maintains its own conversation history and system prompt.
+
+| Agent | Role | Prompt |
+|-------|------|--------|
+| **Game Master** | Intent routing — decides what happens when the player acts | [`GMPromptBuilder.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/GMPromptBuilder.kt) |
+| **Narrator** | Second-person prose, show-don't-tell, pacing control | [`NarratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NarratorAgent.kt) |
+| **System** | Clinical voice of the System — tier/grade progression, notifications | [`SystemAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/SystemAgent.kt) |
+| **NPC** | Dynamic dialogue with dedicated streams per named NPC | [`NPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NPCAgent.kt) |
+| **Autonomous NPC** | NPCs act independently — move, react, pursue goals without player input | [`AutonomousNPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/AutonomousNPCAgent.kt) |
+| **Quest Generator** | Contextual quests fitting player level and location | [`QuestGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/QuestGeneratorAgent.kt) |
+| **Planner** | Async long-term plot architect — foreshadowing, arc planning 50-100 levels ahead | [`PlannerAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/PlannerAgent.kt) |
+| **Location Generator** | Creates immersive locations on discovery with biome, features, lore | [`LocationGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/LocationGeneratorAgent.kt) |
+| **Companion** | Voice personality — the player's guide and emotional anchor | [`GMPromptBuilder.kt:971`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/GMPromptBuilder.kt#L971) |
+
+Agents are lazy-initialized and only appear in the debug UI when first used. A `LoggingLLMInterface` wrapper intercepts all LLM calls for the debug dashboard.
+
+## World Seeds
+
+Each seed defines a complete world: power system, lore, tutorial structure, named NPCs, and a companion character.
+
+| Seed | World | Companion | Tagline | Source |
+|------|-------|-----------|---------|--------|
+| `integration` | System Apocalypse | **Hank** — grumpy Brooklyn fairy | *Normal Tuesday. Sky splits. Now you're integrated. Kill to level.* | [`WorldSeed.kt:167`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L167) |
+| `tabletop` | Classic Fantasy | **Pip** — enchanted ink sprite | *Roll for initiative. The Realm needs heroes.* | [`WorldSeed.kt:648`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L648) |
+| `crawler` | Dungeon Crawler | **Glitch** — rogue camera drone | *Earth is gone. You're entertainment now. Make it a good show.* | [`WorldSeed.kt:834`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L834) |
+| `quiet_life` | Cozy Apocalypse | **Bramble** — fluffy forest spirit | *The wars are over. Time to build something worth protecting.* | [`WorldSeed.kt:1039`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L1039) |
 
 ## Quick Start
 
-### Build and Run
+### 1. Start the Dev Server
 
 ```bash
-# Run with Gradle (defaults to --claude-code --debug)
-./gradlew :cli:run --console=plain
-
-# Or specify options manually
-./gradlew :cli:run --console=plain --args="--claude-code"
+./dev-server.sh [provider] [model]
 ```
 
-### Debug Dashboard
+| Command | Provider | Model | Requires |
+|---------|----------|-------|----------|
+| `./dev-server.sh` | Gemini | gemini-2.5-flash | `GOOGLE_API_KEY` in `.env.local` |
+| `./dev-server.sh gemini pro` | Gemini | gemini-3.1-pro-preview | `GOOGLE_API_KEY` in `.env.local` |
+| `./dev-server.sh claude` | Claude Code CLI | claude-opus-4-6 | Claude Pro subscription |
+| `./dev-server.sh codex` | Codex CLI | codex-5.4 | Codex CLI installed |
 
-When running with `--debug`, a web dashboard opens at **http://localhost:8080** with:
+For Gemini, create a `.env.local` at the project root:
 
-- **Terminal** (left) - Game runs entirely in the browser
-- **Logs** - Setup events, AI calls, game events with filtering
-- **Character** - View character sheet, stats, inventory, quests, NPCs
-- **Agents** - View all AI agent conversations (system prompts, messages)
-- **Database** - Browse game tables and run queries
-- **Plan** - Visualize plot threads and game state
+```bash
+GOOGLE_API_KEY=your_key_here
+```
 
-### Text-to-Speech (TTS)
+Get a key from [Google AI Studio](https://aistudio.google.com/apikey).
 
-The web dashboard includes optional TTS that reads narrative content aloud using Microsoft Edge's free neural voices.
+Claude and Codex run through their respective CLIs — no API key needed, just an active subscription.
+
+### 2. Play (Claude Code Companion)
+
+With the dev server running, launch a companion session:
+
+```bash
+./play_integration.sh    # Hank — System Apocalypse
+./play_tabletop.sh       # Pip — Classic Fantasy
+./play_crawler.sh        # Glitch — Dungeon Crawler
+./play_quiet_life.sh     # Bramble — Cozy Apocalypse
+```
+
+Each script launches Claude Code with the companion's full personality as a system prompt. The companion uses MCP tools to drive the game engine — creating the session, running combat, generating locations, and narrating events in character.
+
+### 3. MCP Setup
+
+The server exposes 35+ game tools via MCP at `http://localhost:8080/mcp`.
+
+**Claude Code** auto-discovers the config from `.mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "rpgenerator": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+**Other MCP clients:** point your client at `http://localhost:8080/mcp` (Streamable HTTP transport). The server returns a `Mcp-Session-Id` header for session persistence — include it in subsequent requests.
+
+Available tool categories:
+- **Lifecycle:** `create_game`, `set_character`, `start_game`, `save_game`
+- **Queries:** `get_game_state`, `game_get_character_sheet`, `game_get_inventory`, `game_get_active_quests`, `game_get_npcs_here`
+- **Actions:** `send_player_input`, `game_attack_target`, `game_move_to_location`, `game_talk_to_npc`, `game_use_item`, `game_use_skill`
+- **Generation:** `game_generate_scene_art`, `game_generate_portrait`, `game_generate_npc`, `game_generate_location`
+- **Debug:** `debug_get_agent_conversations`, `debug_get_event_log`, `debug_get_plot_graph`
+
+### 4. Mobile App (Android)
+
+The Android app connects directly to Gemini Live for voice and to the dev server for game state.
 
 **Setup:**
+
+1. Add `GOOGLE_API_KEY` to `.env.local` (same key as the server)
+2. Start the dev server: `./dev-server.sh`
+
+**Build & install:**
+
 ```bash
-# Install edge-tts (one time)
-pipx install edge-tts
-# Or: pip install edge-tts
+./gradlew :composeApp:assembleDebug
+./gradlew :composeApp:installDebug
 ```
 
-**Usage:**
-1. Run with `--debug` flag
-2. Open http://localhost:8080
-3. Click the "TTS Off" button in the header to enable
-4. Select a voice from the dropdown (US/UK/AU male/female options)
-5. Narrative text and player choices are read automatically
-6. Press Enter to stop current speech and continue
-
-TTS settings persist across sessions.
-
-### LLM Options
-
-Set one of these environment variables, or use the corresponding flag:
-
-| Provider | Environment Variable | Flag |
-|----------|---------------------|------|
-| Claude | `ANTHROPIC_API_KEY` | `--claude` |
-| OpenAI | `OPENAI_API_KEY` | `--openai` |
-| Google Gemini | `GOOGLE_API_KEY` | `--gemini` |
-| Grok (xAI) | `XAI_API_KEY` | `--grok` |
-| Claude Code CLI | (requires Claude Pro) | `--claude-code` |
-| Mock (no AI) | - | `--mock` |
-
-If no flag is specified, the CLI auto-detects based on available environment variables.
-
-### Other Flags
-
-```
---select-model     Interactively choose which model to use
---model=MODEL_ID   Use a specific model
---list-models      Show all available models
---debug            Start web debug dashboard on http://localhost:8080
---help             Show help
-```
-
-## Architecture
-
-```
-┌────────────────────────────────────────┐
-│     Your Application (Any Platform)    │
-│  - UI/UX (terminal, mobile, web, etc)  │
-│  - LLM integration (Claude, GPT, etc)  │
-└────────────┬───────────────────────────┘
-             │ (implements LLMInterface)
-┌────────────▼───────────────────────────┐
-│      RPGenerator Core Library          │
-│  - Game state management               │
-│  - Agent orchestration                 │
-│  - Event system & persistence          │
-│  - Game mechanics                      │
-└────────────────────────────────────────┘
-```
-
-## Library API
-
-```kotlin
-// 1. Implement LLM interface for your provider
-class MyLLM(apiKey: String) : LLMInterface {
-    override fun startAgent(systemPrompt: String) = MyAgentStream(systemPrompt, apiKey)
-}
-
-// 2. Create client and start a game
-val client = RPGClient(databasePath = "~/.mygame/saves")
-val game = client.startGame(
-    config = GameConfig(SystemType.SYSTEM_INTEGRATION, Difficulty.NORMAL),
-    llm = MyLLM(apiKey)
-)
-
-// 3. Game loop
-game.processInput("I want to explore the forest").collect { event ->
-    when (event) {
-        is GameEvent.NarratorText -> println(event.text)
-        is GameEvent.NPCDialogue -> println("${event.npcName}: ${event.text}")
-        is GameEvent.SystemNotification -> showNotification(event.text)
-        // ... handle other events
-    }
-}
-```
-
-### LLMInterface
-
-```kotlin
-interface LLMInterface {
-    fun startAgent(systemPrompt: String): AgentStream
-}
-
-interface AgentStream {
-    suspend fun sendMessage(message: String): Flow<String>
-}
-```
+Requires Android SDK and a device/emulator with Google Play Services. The app uses a foreground service with microphone access for the Gemini Live voice session.
 
 ## Tech Stack
 
-- Kotlin Multiplatform (JVM, iOS, Android)
-- Kotlinx Coroutines & Serialization
-- SQLDelight for persistence
-- Compose Multiplatform for mobile/desktop UI
+- **Kotlin Multiplatform** (JVM, iOS, Android)
+- **Gemini SDK** (`com.google.genai:google-genai:1.41.0`) — Live API for voice, text for agents
+- **Ktor** — Server (Netty), client (OkHttp on Android)
+- **Compose Multiplatform** — Mobile UI (Android, iOS stubs)
+- **SQLDelight** — Game state persistence
+- **Kotlinx Coroutines & Serialization**
+
+## Project Structure
+
+```
+rpgenerator/
+├── core/                   # Multiplatform library (JVM, iOS)
+│   └── src/commonMain/
+│       ├── agents/         # AI agents (GM, Narrator, NPC, System, Planner, etc.)
+│       ├── api/            # Public interfaces (Game, GameEvent, LLMInterface)
+│       ├── domain/         # Game entities (CharacterSheet, NPC, Quest, GameState)
+│       ├── orchestration/  # Main game loop, intent routing
+│       ├── story/          # World seeds, plot planning
+│       └── persistence/    # Save/load via SQLDelight
+├── server/                 # Ktor server + MCP endpoint
+├── composeApp/             # Mobile UI (Android, iOS stubs)
+├── play_integration.sh     # Launch companion session — Hank
+├── play_tabletop.sh        # Launch companion session — Pip
+├── play_crawler.sh         # Launch companion session — Glitch
+├── play_quiet_life.sh      # Launch companion session — Bramble
+├── dev-server.sh           # Start dev server
+└── .mcp.json               # MCP client config (auto-discovered by Claude Code)
+```
+
+See [`CLAUDE.md`](CLAUDE.md) for full architecture details, agent system documentation, and common development tasks.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License — see LICENSE file for details.
