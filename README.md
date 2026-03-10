@@ -15,18 +15,19 @@ The engine handles agent orchestration, game state, combat, quests, and narratio
 └──────────┬──────────┘
            │ audio ↕ tool calls ↕
 ┌──────────┴──────────────┐       ┌──────────────────────────────┐
-│   Mobile App (Android)  │       │   Claude Code (MCP Client)   │
-│                         │       │                              │
-│   Mic/Speaker ↔ Gemini  │       │   Companion prompt           │
-│   Tool results ↔ Server │       │   (Hank/Pip/Glitch/Bramble)  │
+│   Mobile App (Android)  │       │   Any MCP Client             │
+│                         │       │   (Claude Code, custom, etc.) │
+│   Mic/Speaker ↔ Gemini  │       │                              │
+│   Tool results ↔ Server │       │   Companion prompt           │
+│                         │       │   (Hank/Pip/Glitch/Bramble)  │
 └──────────────┬──────────┘       └──────────────┬───────────────┘
                │ REST (tool exec)                │ MCP (HTTP)
                │                                 │
 ┌──────────────▼─────────────────────────────────▼───────────────┐
 │                    RPGenerator Server (:8080)                      │
 │                                                                   │
-│   REST API            WebSocket           MCP Endpoint            │
-│   /api/game/*/tool    /ws/game/*          /mcp                    │
+│   REST API              MCP Endpoint                              │
+│   /api/game/*/tool      /mcp                                      │
 │                                                                   │
 │   ┌───────────────────────────────────────────────────────────┐   │
 │   │                    RPGenerator Core                       │   │
@@ -44,7 +45,7 @@ The engine handles agent orchestration, game state, combat, quests, and narratio
 
 Two client paths:
 - **Mobile**: Player ↔ Gemini Live (Google) ↔ App ↔ Server REST API for tool execution
-- **Claude Code**: Player ↔ Claude ↔ Server MCP endpoint for tool execution
+- **MCP**: Any MCP client (Claude Code, custom apps, etc.) ↔ Server MCP endpoint for tool execution
 
 ### Agents
 
@@ -117,7 +118,7 @@ Each script launches Claude Code with the companion's full personality as a syst
 
 The server exposes 35+ game tools via MCP at `http://localhost:8080/mcp`.
 
-**Claude Code** auto-discovers the config from `.mcp.json` in the project root:
+**Claude Code** auto-discovers this config from `.mcp.json` in the project root:
 
 ```json
 {
