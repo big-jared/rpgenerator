@@ -9,39 +9,42 @@ The engine handles agent orchestration, game state, combat, quests, and narratio
 ## How It Works
 
 ```
-┌──────────────────────┐       ┌──────────────────────────┐
-│   Mobile App         │       │   Claude Code            │
-│   (Android)          │       │   (MCP Client)           │
-│                      │       │                          │
-│   Gemini Live ◄──────┼──┐    │   Companion prompt       │
-│   (voice, client-    │  │    │   (Hank/Pip/Glitch/      │
-│    side)             │  │    │    Bramble)               │
-└──────────┬───────────┘  │    └──────────┬───────────────┘
-           │ HTTP/WS      │               │ MCP (HTTP)
-           │              │               │
-┌──────────▼──────────────┼───────────────▼───────────────┐
-│              RPGenerator Server (:8080)                  │
-│                                                         │
-│   REST API        WebSocket       MCP Endpoint          │
-│   /api/game/*     /ws/game/*      /mcp                  │
-│                                                         │
-│   ┌─────────────────────────────────────────────────┐   │
-│   │              RPGenerator Core                   │   │
-│   │   Game Master ─── Narrator ─── System Agent     │   │
-│   │   NPC Agents ─── Quest Gen ─── Planner          │   │
-│   │   Location Gen ─── Autonomous NPCs              │   │
-│   │                                                 │   │
-│   │   GameState ─── Combat ─── Persistence          │   │
-│   └─────────────────────────────────────────────────┘   │
-│                         │                               │
-│                    LLM Provider                         │
-│              (Gemini / Claude / Codex)                   │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────┐
+│  Google Gemini Live  │
+│  (voice + audio)     │
+└──────────┬──────────┘
+           │ audio ↕ tool calls ↕
+┌──────────┴──────────────┐       ┌──────────────────────────────┐
+│   Mobile App (Android)  │       │   Claude Code (MCP Client)   │
+│                         │       │                              │
+│   Mic/Speaker ↔ Gemini  │       │   Companion prompt           │
+│   Tool results ↔ Server │       │   (Hank/Pip/Glitch/Bramble)  │
+└──────────────┬──────────┘       └──────────────┬───────────────┘
+               │ REST (tool exec)                │ MCP (HTTP)
+               │                                 │
+┌──────────────▼─────────────────────────────────▼───────────────┐
+│                    RPGenerator Server (:8080)                      │
+│                                                                   │
+│   REST API            WebSocket           MCP Endpoint            │
+│   /api/game/*/tool    /ws/game/*          /mcp                    │
+│                                                                   │
+│   ┌───────────────────────────────────────────────────────────┐   │
+│   │                    RPGenerator Core                       │   │
+│   │   Game Master ─── Narrator ─── System Agent               │   │
+│   │   NPC Agents ─── Quest Gen ─── Planner                    │   │
+│   │   Location Gen ─── Autonomous NPCs                        │   │
+│   │                                                           │   │
+│   │   GameState ─── Combat ─── Persistence                    │   │
+│   └───────────────────────────────────────────────────────────┘   │
+│                            │                                      │
+│                       LLM Provider                                │
+│                 (Gemini / Claude / Codex)                          │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 Two client paths:
-- **Mobile app** connects to Gemini Live directly for voice (client-side audio) and to the server for game state and tool execution
-- **Claude Code** connects via MCP, plays the companion character, and calls game tools through the server
+- **Mobile**: Player ↔ Gemini Live (Google) ↔ App ↔ Server REST API for tool execution
+- **Claude Code**: Player ↔ Claude ↔ Server MCP endpoint for tool execution
 
 ### Agents
 
