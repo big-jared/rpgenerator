@@ -2,45 +2,32 @@
 
 ## Project Overview
 
-RPGenerator is a Kotlin Multiplatform library for building AI-powered LitRPG games. It orchestrates multiple AI agents (Game Master, Narrator, NPCs) to create dynamic, story-driven gameplay.
+RPGenerator is a Kotlin Multiplatform game engine for AI-powered LitRPG adventures. It orchestrates multiple AI agents (Game Master, Narrator, NPCs, Companion) to create dynamic, voice-first gameplay with unique companion characters per world seed.
 
 ## Build & Run
 
 ```bash
-# Run CLI with debug dashboard
-./gradlew :cli:run --console=plain
+# Start the dev server (default: Gemini Flash)
+./scripts/dev-server.sh
+
+# Start with specific provider
+./scripts/dev-server.sh gemini pro    # Gemini Pro
+./scripts/dev-server.sh claude        # Claude Code CLI
+./scripts/dev-server.sh codex         # Codex CLI
+
+# Play with a companion (requires running server)
+./scripts/play_integration.sh    # Hank — System Apocalypse
+./scripts/play_tabletop.sh       # Pip — Classic Fantasy
+./scripts/play_crawler.sh        # Glitch — Dungeon Crawler
+./scripts/play_quiet_life.sh     # Bramble — Cozy Apocalypse
 
 # Compile only
 ./gradlew :core:compileKotlinJvm
-./gradlew :cli:compileKotlin
+./gradlew :server:compileKotlin
+
+# Build Android APK
+./gradlew :composeApp:assembleDebug
 ```
-
-## Web Debug Dashboard
-
-When running with `--debug` (default), a web dashboard opens at **http://localhost:8080**.
-
-### Dashboard Tabs
-
-| Tab | Description | Data Source |
-|-----|-------------|-------------|
-| **Terminal** | Game runs in browser via WebSocket | Live game I/O |
-| **Logs** | Setup events, AI calls, game events | Event stream |
-| **Agents** | All AI agent conversations with system prompts | In-memory agent tracking |
-| **Character** | Player stats, inventory, quests, NPCs at location | `Game.getState()` API (in-memory) |
-| **Database** | Browse SQLite tables, run queries | Persisted data (after `save()`) |
-| **Plan** | Plot graph visualization | Story planning system |
-
-### Key Files for Debug System
-
-- `cli/src/main/kotlin/com/rpgenerator/cli/DebugWebServer.kt` - Web server, WebSocket, all dashboard HTML/JS/CSS
-- `cli/src/main/kotlin/com/rpgenerator/cli/RPGTerminal.kt` - Game loop, agent logging integration
-- `core/src/commonMain/kotlin/com/rpgenerator/core/api/GameStateSnapshot.kt` - Data exposed to Character tab
-
-### How Data Flows
-
-1. **Character Tab**: Calls `/api/character` → `getCharacterData()` → `game.getState()` → returns `CharacterSheetData` with player stats, inventory, quests, NPCs
-2. **Agents Tab**: Real-time tracking via `LoggingLLMInterface` wrapper that intercepts all LLM calls
-3. **Database Tab**: Direct SQLite queries via SQLDelight
 
 ## Project Structure
 
@@ -52,14 +39,24 @@ rpgenerator/
 │       ├── RPGClientImpl.kt       # Main entry point, game creation/loading
 │       ├── agents/                # AI agents
 │       │   ├── GameMasterAgent.kt
+│       │   ├── GMPromptBuilder.kt # Companion prompt routing
 │       │   ├── NarratorAgent.kt
 │       │   ├── NPCAgent.kt
+│       │   ├── AutonomousNPCAgent.kt
+│       │   ├── SystemAgent.kt
 │       │   ├── QuestGeneratorAgent.kt
-│       │   └── ConsensusEngine.kt
+│       │   ├── PlannerAgent.kt
+│       │   ├── LocationGeneratorAgent.kt
+│       │   └── companions/        # Per-companion personality prompts
+│       │       ├── HankCompanion.kt
+│       │       ├── PipCompanion.kt
+│       │       ├── GlitchCompanion.kt
+│       │       ├── BrambleCompanion.kt
+│       │       └── ReceptionistCompanion.kt
 │       ├── api/                   # Public interfaces
 │       │   ├── Game.kt            # Main game interface
 │       │   ├── GameEvent.kt       # Event types emitted during gameplay
-│       │   ├── GameStateSnapshot.kt # UI-facing state (Character tab data)
+│       │   ├── GameStateSnapshot.kt # UI-facing state
 │       │   └── LLMInterface.kt    # LLM provider abstraction
 │       ├── domain/                # Core game entities
 │       │   ├── GameState.kt       # Full internal game state
@@ -69,81 +66,80 @@ rpgenerator/
 │       │   └── TierSystem.kt      # Class/tier progression (PlayerClass enum)
 │       ├── orchestration/
 │       │   └── GameOrchestrator.kt # Main game loop, intent routing
-│       ├── story/
-│       │   └── StoryPlanningService.kt # Plot graph generation
+│       ├── story/                 # World seeds (per-seed files)
+│       │   ├── WorldSeed.kt       # Data classes + WorldSeeds registry
+│       │   ├── IntegrationSeed.kt
+│       │   ├── TabletopSeed.kt
+│       │   ├── CrawlerSeed.kt
+│       │   ├── QuietLifeSeed.kt
+│       │   └── StoryPlanningService.kt
 │       └── persistence/
 │           ├── GameRepository.kt  # Save/load game state
 │           └── PlotGraphRepository.kt
-├── cli/                           # CLI application
-│   └── src/main/kotlin/com/rpgenerator/cli/
-│       ├── Main.kt                # Entry point
-│       ├── RPGTerminal.kt         # Terminal game loop
-│       └── DebugWebServer.kt      # Web debug dashboard (2000+ lines)
-└── composeApp/                    # Mobile/desktop UI (Compose Multiplatform)
+├── server/                        # Ktor server (REST + MCP)
+├── composeApp/                    # Mobile UI (Android, iOS stubs)
+├── scripts/                       # Dev server + play scripts
+└── .mcp.json                      # MCP client config
 ```
 
 ## Key Architecture Patterns
 
+### Two Client Paths
+- **Mobile**: Player ↔ Gemini Live (client-side) ↔ App ↔ Server REST API for tool execution
+- **MCP**: Any MCP client (Claude Code, etc.) ↔ Server MCP endpoint (`/mcp`)
+
 ### Agent System
-- Agents are lazy-initialized (`by lazy`) to only appear in debug UI when used
+- Agents are lazy-initialized (`by lazy`) — only appear when first used
 - Each agent has a system prompt and maintains conversation history
 - `LoggingLLMInterface` wraps the actual LLM to intercept and log all calls
+- Companion prompts live in `core/.../agents/companions/` (one file per companion)
 
 ### Game State
-- `GameState` (internal) - Full mutable state with all game data
-- `GameStateSnapshot` (API) - Immutable snapshot for UI display
+- `GameState` (internal) — Full mutable state with all game data
+- `GameStateSnapshot` (API) — Immutable snapshot for UI display
 - State includes: player stats, location, NPCs by location, quests, inventory
 
 ### Event System
 - `GameOrchestrator.processInput()` returns `Flow<GameEvent>`
 - Events: `NarratorText`, `NPCDialogue`, `SystemNotification`, `QuestStarted`, etc.
 
-## Common Tasks
+### Tool Contract
+- `Game.executeTool()` → `UnifiedToolContractImpl` — 35+ game tools
+- Server exposes tools via REST (`/api/game/{id}/tool`) and MCP (`/mcp`)
+- Tool categories: Lifecycle, Queries, Actions, Generation, Debug
 
-### Adding data to Character tab
-1. Add field to `GameStateSnapshot` in `api/GameStateSnapshot.kt`
-2. Map it in `GameImpl.getState()`
-3. Add to `CharacterSheetData` in `DebugWebServer.kt`
-4. Update `getCharacterData()` to populate it
-5. Add HTML element and JS rendering in `loadCharacter()`
+## Common Tasks
 
 ### Adding a new agent
 1. Create agent class in `core/agents/`
 2. Add lazy property in `GameOrchestrator`
-3. Agent will auto-appear in debug UI when first used
+3. Agent will auto-appear when first used
+
+### Adding a new companion
+1. Create `XxxCompanion.kt` in `core/.../agents/companions/`
+2. Add routing in `GMPromptBuilder.kt` (`when (seed?.id)` block)
+3. Create world seed file in `core/.../story/`
+4. Add to `WorldSeeds` registry in `WorldSeed.kt`
+5. Create play script in `scripts/`
 
 ### NPC System
 - NPCs stored in `GameState.npcsByLocation: Map<String, List<NPC>>`
 - `GameState.getNPCsAtCurrentLocation()` returns NPCs at player's location
 - NPC resolution uses fuzzy matching + LLM fallback for ambiguous references
 
-## Debug Session Files
+## MCP Server
 
-The debug system saves session data to `cli/.rpgenerator-debug/`:
+The server exposes game tools via MCP at `http://localhost:8080/mcp` (Streamable HTTP transport).
 
-| File | Description |
-|------|-------------|
-| `agents.md` | Full agent conversations - system prompts + all messages (auto-updated) |
-| `terminal.log` | Terminal I/O log with ANSI color codes |
-
-These files persist between sessions and are useful for:
-- Reviewing what agents said in previous runs
-- Understanding agent behavior patterns
-- Debugging issues that occurred in past sessions
+Claude Code auto-discovers from `.mcp.json` in the project root. Other clients: point at the URL and include the `Mcp-Session-Id` header for session persistence.
 
 ## Files to Read First
 
 For understanding the system:
-1. `core/.../orchestration/GameOrchestrator.kt` - Main game loop, agent coordination
-2. `core/.../api/GameEvent.kt` - All event types
-3. `core/.../domain/GameState.kt` - Full state model
-4. `cli/.../DebugWebServer.kt` - Web dashboard implementation
-
-For debugging issues:
-1. `cli/.rpgenerator-debug/agents.md` - Full agent conversations from last session
-2. `cli/.rpgenerator-debug/terminal.log` - Terminal I/O history
-3. Agents tab in web dashboard for live system prompts
-4. Database tab for persisted state
+1. `core/.../orchestration/GameOrchestrator.kt` — Main game loop, agent coordination
+2. `core/.../api/GameEvent.kt` — All event types
+3. `core/.../domain/GameState.kt` — Full state model
+4. `server/.../` — Server routes, MCP endpoint
 
 ## LLM Integration
 
@@ -157,4 +153,4 @@ interface AgentStream {
 }
 ```
 
-Supported providers: Claude, OpenAI, Gemini, Grok, Claude Code CLI, Mock
+Supported providers: Gemini, Claude Code CLI, Codex CLI, Mock
