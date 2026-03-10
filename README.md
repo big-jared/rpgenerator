@@ -101,6 +101,8 @@ Get a key from [Google AI Studio](https://aistudio.google.com/apikey).
 
 Claude and Codex run through their respective CLIs — no API key needed, just an active subscription.
 
+> **Recommended:** Use Gemini for the server backend. Claude/Codex CLI providers shell out to a new process for every agent call (narrator, GM, NPCs), which is significantly slower than Gemini's direct API. Use `./scripts/dev-server.sh` (Gemini) for the server, and Claude Code or Codex as the companion client via the play scripts below.
+
 ### 2. Play (Claude Code Companion)
 
 With the dev server running, launch a companion session:
@@ -187,6 +189,13 @@ rpgenerator/
 │   ├── play_tabletop.sh    # Launch companion session — Pip
 │   ├── play_crawler.sh     # Launch companion session — Glitch
 │   └── play_quiet_life.sh  # Launch companion session — Bramble
+├── qa_tests/
+│   ├── run_tests.sh        # QA test runner (claude or codex)
+│   ├── prompts/            # Test scenario prompts
+│   │   ├── happy_path.md   # Normal gameplay verification
+│   │   ├── breaker_path.md # Edge cases & adversarial inputs
+│   │   └── confused_path.md# Confused player simulation
+│   └── bug_reports/        # Bug reports filed via report_bug MCP tool
 └── .mcp.json               # MCP client config (auto-discovered by Claude Code)
 ```
 

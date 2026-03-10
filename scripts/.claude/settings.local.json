@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__rpgenerator__create_game",
+      "mcp__rpgenerator__set_character",
+      "mcp__rpgenerator__start_game"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "rpgenerator"
+  ]
+}

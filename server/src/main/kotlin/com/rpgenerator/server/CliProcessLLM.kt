@@ -31,6 +31,7 @@ class CliProcessLLM(
     override val maxContextTokens: Int get() = 100_000
 
     override fun startAgent(systemPrompt: String): AgentStream {
+        println("[CliProcessLLM] startAgent called, command=$command, prompt=${systemPrompt.take(80)}...")
         return CliAgentStream(command, args, systemPrompt)
     }
 
@@ -43,7 +44,9 @@ class CliProcessLLM(
         private val conversationHistory = mutableListOf<Pair<String, String>>() // role, content
 
         override suspend fun sendMessage(message: String): Flow<String> = flow {
+            println("[CliAgent] sendMessage called, message=${message.take(100)}...")
             val response = runCli(message)
+            println("[CliAgent] got response (${response.length} chars): ${response.take(200)}...")
 
             conversationHistory.add("user" to message)
             conversationHistory.add("assistant" to response)
@@ -57,10 +60,17 @@ class CliProcessLLM(
 
         private suspend fun runCli(message: String): String = withContext(Dispatchers.IO) {
             val cmdArgs = buildCliArgs(message)
+            println("[CliAgent] spawning: ${cmdArgs.take(3).joinToString(" ")} ... (${cmdArgs.size} args total)")
+            println("[CliAgent] prompt length: ${cmdArgs.lastOrNull()?.length ?: 0} chars")
+
             val processBuilder = ProcessBuilder(cmdArgs)
                 .redirectErrorStream(true)
+            // Remove CLAUDECODE env var so nested claude processes don't refuse to start
+            processBuilder.environment().remove("CLAUDECODE")
 
+            val startTime = System.currentTimeMillis()
             val process = processBuilder.start()
+            println("[CliAgent] process started, pid=${process.pid()}")
 
             // Some CLIs accept message on stdin
             if (command == "codex") {
@@ -72,6 +82,12 @@ class CliProcessLLM(
 
             val output = process.inputStream.bufferedReader().readText()
             val exitCode = process.waitFor()
+            val elapsed = System.currentTimeMillis() - startTime
+
+            println("[CliAgent] process exited, code=$exitCode, elapsed=${elapsed}ms, output=${output.length} chars")
+            if (exitCode != 0) {
+                println("[CliAgent] ERROR output: ${output.take(500)}")
+            }
 
             if (exitCode != 0 && output.isBlank()) {
                 "Error: $command exited with code $exitCode"
@@ -88,6 +104,7 @@ class CliProcessLLM(
                     add("--system-prompt")
                     add(systemPrompt)
                     addAll(extraArgs)
+                    add("-p")
                     add(buildConversationContext(message))
                 }
                 "codex" -> buildList {

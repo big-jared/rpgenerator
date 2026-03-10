@@ -339,6 +339,21 @@ object McpHandler {
                     "Compare what the narrator 'thinks' is happening vs actual game state. Shows narrator's system prompt, recent context sent to narrator, and current game state side-by-side. Use to catch narrator drift — describing things that don't match reality.",
                     emptyMap()
                 )
+
+                // QA tools
+                addMCPTool("report_bug",
+                    "Report a bug found during testing. Writes a structured bug report to qa_tests/bug_reports/ as a JSON file. Use this whenever you encounter unexpected behavior, crashes, inconsistencies, or UX issues.",
+                    mapOf(
+                        "title" to ToolParam("string", "Brief title of the bug", required = true),
+                        "description" to ToolParam("string", "Detailed description: what happened, what you expected, and what actually occurred", required = true),
+                        "severity" to ToolParam("string", "Severity: critical (crash/data loss), high (broken feature), medium (wrong behavior), low (cosmetic/minor)"),
+                        "category" to ToolParam("string", "Category: gameplay, combat, narrative, npc, quest, inventory, movement, ui, tool_api, state"),
+                        "steps_to_reproduce" to ToolParam("string", "Step-by-step reproduction instructions"),
+                        "tool_call" to ToolParam("string", "The MCP tool call that triggered the bug, if applicable"),
+                        "game_state_context" to ToolParam("string", "Relevant game state at time of bug (level, location, quest, etc.)")
+                    ),
+                    required = listOf("title", "description")
+                )
             }
         })
     }
@@ -1317,6 +1332,64 @@ object McpHandler {
                             }
                         }
                     }
+                }
+            }
+
+            "report_bug" -> {
+                val title = args["title"]?.jsonPrimitive?.contentOrNull ?: ""
+                val description = args["description"]?.jsonPrimitive?.contentOrNull ?: ""
+                if (title.isBlank() || description.isBlank()) {
+                    return buildJsonObject {
+                        put("success", JsonPrimitive(false))
+                        put("error", JsonPrimitive("title and description are required"))
+                    }
+                }
+                val severity = args["severity"]?.jsonPrimitive?.contentOrNull ?: "medium"
+                val category = args["category"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+                val steps = args["steps_to_reproduce"]?.jsonPrimitive?.contentOrNull
+                val toolCall = args["tool_call"]?.jsonPrimitive?.contentOrNull
+                val gameContext = args["game_state_context"]?.jsonPrimitive?.contentOrNull
+
+                val timestamp = System.currentTimeMillis()
+                val bugId = "BUG-${timestamp}"
+                val report = buildJsonObject {
+                    put("id", JsonPrimitive(bugId))
+                    put("title", JsonPrimitive(title))
+                    put("description", JsonPrimitive(description))
+                    put("severity", JsonPrimitive(severity))
+                    put("category", JsonPrimitive(category))
+                    put("timestamp", JsonPrimitive(timestamp))
+                    put("timestampReadable", JsonPrimitive(java.time.Instant.ofEpochMilli(timestamp).toString()))
+                    if (steps != null) put("steps_to_reproduce", JsonPrimitive(steps))
+                    if (toolCall != null) put("tool_call", JsonPrimitive(toolCall))
+                    if (gameContext != null) put("game_state_context", JsonPrimitive(gameContext))
+                    // Include current game state if available
+                    if (sessionState.gameStarted) {
+                        try {
+                            val session = getGameSession(sessionState)
+                            val state = session.game.getState()
+                            putJsonObject("snapshot") {
+                                put("playerName", JsonPrimitive(state.playerStats.name))
+                                put("level", JsonPrimitive(state.playerStats.level))
+                                put("health", JsonPrimitive("${state.playerStats.health}/${state.playerStats.maxHealth}"))
+                                put("location", JsonPrimitive(state.location))
+                                put("seedId", JsonPrimitive(sessionState.seedId ?: "unknown"))
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                // Write to qa_tests/bug_reports/
+                val bugDir = java.io.File("qa_tests/bug_reports")
+                bugDir.mkdirs()
+                val file = java.io.File(bugDir, "$bugId.json")
+                file.writeText(json.encodeToString(JsonObject.serializer(), report))
+
+                buildJsonObject {
+                    put("success", JsonPrimitive(true))
+                    put("bugId", JsonPrimitive(bugId))
+                    put("file", JsonPrimitive(file.absolutePath))
+                    put("message", JsonPrimitive("Bug report saved: $title"))
                 }
             }
 

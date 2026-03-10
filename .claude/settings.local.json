@@ -79,7 +79,8 @@
       "Bash(./dev-server.sh:*)",
       "Bash(jar xf:*)",
       "Bash(git -C /Users/jaredguttromson/src/rpgenerator status)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
