@@ -2,7 +2,7 @@
 # Play RPGenerator as Bramble — fluffy forest spirit companion
 # Seed: Quiet Life (Cozy Apocalypse)
 #
-# Prerequisites: dev server running (./dev-server.sh)
+# Prerequisites: dev server running (./scripts/dev-server.sh)
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Check if server is running
 if ! curl -s http://localhost:8080/health > /dev/null 2>&1; then
     echo "Error: Dev server not running. Start it first:"
-    echo "  ./dev-server.sh"
+    echo "  ./scripts/dev-server.sh"
     exit 1
 fi
 

@@ -12,10 +12,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Load env vars from .env.local
-if [ -f "$SCRIPT_DIR/.env.local" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env.local" | xargs)
+if [ -f "$PROJECT_ROOT/.env.local" ]; then
+    export $(grep -v '^#' "$PROJECT_ROOT/.env.local" | xargs)
 else
     echo "Warning: .env.local not found. GOOGLE_API_KEY may not be set."
 fi
@@ -60,4 +61,4 @@ echo "  LLM:      $LLM_PROVIDER ($LLM_MODEL)"
 echo "  Port:     8080"
 echo ""
 
-exec "$SCRIPT_DIR/gradlew" :server:run --console=plain
+exec "$PROJECT_ROOT/gradlew" :server:run --console=plain

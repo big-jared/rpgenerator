@@ -9,26 +9,39 @@ The engine handles agent orchestration, game state, combat, quests, and narratio
 ## How It Works
 
 ```
-┌─────────────────────────────────────┐
-│         Mobile App (Android)        │
-│  Voice input → Gemini Live API      │
-│  Game state ← Server API            │
-└──────────────┬──────────────────────┘
-               │ HTTP / WebSocket
-┌──────────────▼──────────────────────┐
-│        RPGenerator Server           │
-│  Ktor + MCP endpoint (:8080)        │
-│  Game orchestration + persistence   │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│        RPGenerator Core             │
-│  Agents, game state, mechanics      │
-│  Kotlin Multiplatform (JVM + iOS)   │
-└─────────────────────────────────────┘
+┌──────────────────────┐       ┌──────────────────────────┐
+│   Mobile App         │       │   Claude Code            │
+│   (Android)          │       │   (MCP Client)           │
+│                      │       │                          │
+│   Gemini Live ◄──────┼──┐    │   Companion prompt       │
+│   (voice, client-    │  │    │   (Hank/Pip/Glitch/      │
+│    side)             │  │    │    Bramble)               │
+└──────────┬───────────┘  │    └──────────┬───────────────┘
+           │ HTTP/WS      │               │ MCP (HTTP)
+           │              │               │
+┌──────────▼──────────────┼───────────────▼───────────────┐
+│              RPGenerator Server (:8080)                  │
+│                                                         │
+│   REST API        WebSocket       MCP Endpoint          │
+│   /api/game/*     /ws/game/*      /mcp                  │
+│                                                         │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │              RPGenerator Core                   │   │
+│   │   Game Master ─── Narrator ─── System Agent     │   │
+│   │   NPC Agents ─── Quest Gen ─── Planner          │   │
+│   │   Location Gen ─── Autonomous NPCs              │   │
+│   │                                                 │   │
+│   │   GameState ─── Combat ─── Persistence          │   │
+│   └─────────────────────────────────────────────────┘   │
+│                         │                               │
+│                    LLM Provider                         │
+│              (Gemini / Claude / Codex)                   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-The mobile app connects directly to Gemini Live for voice (client-side), and to the server for game state and tool execution. The companion's personality is injected into the Gemini session, so it speaks in character.
+Two client paths:
+- **Mobile app** connects to Gemini Live directly for voice (client-side audio) and to the server for game state and tool execution
+- **Claude Code** connects via MCP, plays the companion character, and calls game tools through the server
 
 ### Agents
 
@@ -44,7 +57,7 @@ The engine spawns specialized AI agents as needed. Each maintains its own conver
 | **Quest Generator** | Contextual quests fitting player level and location | [`QuestGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/QuestGeneratorAgent.kt) |
 | **Planner** | Async long-term plot architect — foreshadowing, arc planning 50-100 levels ahead | [`PlannerAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/PlannerAgent.kt) |
 | **Location Generator** | Creates immersive locations on discovery with biome, features, lore | [`LocationGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/LocationGeneratorAgent.kt) |
-| **Companion** | Voice personality — the player's guide and emotional anchor | [`GMPromptBuilder.kt:971`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/GMPromptBuilder.kt#L971) |
+| **Companion** | Voice personality — the player's guide and emotional anchor | [`companions/`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/) |
 
 Agents are lazy-initialized and only appear in the debug UI when first used. A `LoggingLLMInterface` wrapper intercepts all LLM calls for the debug dashboard.
 
@@ -54,25 +67,25 @@ Each seed defines a complete world: power system, lore, tutorial structure, name
 
 | Seed | World | Companion | Tagline | Source |
 |------|-------|-----------|---------|--------|
-| `integration` | System Apocalypse | **Hank** — grumpy Brooklyn fairy | *Normal Tuesday. Sky splits. Now you're integrated. Kill to level.* | [`WorldSeed.kt:167`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L167) |
-| `tabletop` | Classic Fantasy | **Pip** — enchanted ink sprite | *Roll for initiative. The Realm needs heroes.* | [`WorldSeed.kt:648`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L648) |
-| `crawler` | Dungeon Crawler | **Glitch** — rogue camera drone | *Earth is gone. You're entertainment now. Make it a good show.* | [`WorldSeed.kt:834`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L834) |
-| `quiet_life` | Cozy Apocalypse | **Bramble** — fluffy forest spirit | *The wars are over. Time to build something worth protecting.* | [`WorldSeed.kt:1039`](core/src/commonMain/kotlin/com/rpgenerator/core/story/WorldSeed.kt#L1039) |
+| `integration` | System Apocalypse | [**Hank**](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/HankCompanion.kt) — grumpy Brooklyn fairy | *Normal Tuesday. Sky splits. Now you're integrated. Kill to level.* | [`IntegrationSeed.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/story/IntegrationSeed.kt) |
+| `tabletop` | Classic Fantasy | [**Pip**](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/PipCompanion.kt) — enchanted ink sprite | *Roll for initiative. The Realm needs heroes.* | [`TabletopSeed.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/story/TabletopSeed.kt) |
+| `crawler` | Dungeon Crawler | [**Glitch**](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/GlitchCompanion.kt) — rogue camera drone | *Earth is gone. You're entertainment now. Make it a good show.* | [`CrawlerSeed.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/story/CrawlerSeed.kt) |
+| `quiet_life` | Cozy Apocalypse | [**Bramble**](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/BrambleCompanion.kt) — fluffy forest spirit | *The wars are over. Time to build something worth protecting.* | [`QuietLifeSeed.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/story/QuietLifeSeed.kt) |
 
 ## Quick Start
 
 ### 1. Start the Dev Server
 
 ```bash
-./dev-server.sh [provider] [model]
+./scripts/dev-server.sh [provider] [model]
 ```
 
 | Command | Provider | Model | Requires |
 |---------|----------|-------|----------|
-| `./dev-server.sh` | Gemini | gemini-2.5-flash | `GOOGLE_API_KEY` in `.env.local` |
-| `./dev-server.sh gemini pro` | Gemini | gemini-3.1-pro-preview | `GOOGLE_API_KEY` in `.env.local` |
-| `./dev-server.sh claude` | Claude Code CLI | claude-opus-4-6 | Claude Pro subscription |
-| `./dev-server.sh codex` | Codex CLI | codex-5.4 | Codex CLI installed |
+| `./scripts/dev-server.sh` | Gemini | gemini-2.5-flash | `GOOGLE_API_KEY` in `.env.local` |
+| `./scripts/dev-server.sh gemini pro` | Gemini | gemini-3.1-pro-preview | `GOOGLE_API_KEY` in `.env.local` |
+| `./scripts/dev-server.sh claude` | Claude Code CLI | claude-opus-4-6 | Claude Pro subscription |
+| `./scripts/dev-server.sh codex` | Codex CLI | codex-5.4 | Codex CLI installed |
 
 For Gemini, create a `.env.local` at the project root:
 
@@ -89,10 +102,10 @@ Claude and Codex run through their respective CLIs — no API key needed, just a
 With the dev server running, launch a companion session:
 
 ```bash
-./play_integration.sh    # Hank — System Apocalypse
-./play_tabletop.sh       # Pip — Classic Fantasy
-./play_crawler.sh        # Glitch — Dungeon Crawler
-./play_quiet_life.sh     # Bramble — Cozy Apocalypse
+./scripts/play_integration.sh    # Hank — System Apocalypse
+./scripts/play_tabletop.sh       # Pip — Classic Fantasy
+./scripts/play_crawler.sh        # Glitch — Dungeon Crawler
+./scripts/play_quiet_life.sh     # Bramble — Cozy Apocalypse
 ```
 
 Each script launches Claude Code with the companion's full personality as a system prompt. The companion uses MCP tools to drive the game engine — creating the session, running combat, generating locations, and narrating events in character.
@@ -130,7 +143,7 @@ The Android app connects directly to Gemini Live for voice and to the dev server
 **Setup:**
 
 1. Add `GOOGLE_API_KEY` to `.env.local` (same key as the server)
-2. Start the dev server: `./dev-server.sh`
+2. Start the dev server: `./scripts/dev-server.sh`
 
 **Build & install:**
 
@@ -164,11 +177,12 @@ rpgenerator/
 │       └── persistence/    # Save/load via SQLDelight
 ├── server/                 # Ktor server + MCP endpoint
 ├── composeApp/             # Mobile UI (Android, iOS stubs)
-├── play_integration.sh     # Launch companion session — Hank
-├── play_tabletop.sh        # Launch companion session — Pip
-├── play_crawler.sh         # Launch companion session — Glitch
-├── play_quiet_life.sh      # Launch companion session — Bramble
-├── dev-server.sh           # Start dev server
+├── scripts/
+│   ├── dev-server.sh       # Start dev server
+│   ├── play_integration.sh # Launch companion session — Hank
+│   ├── play_tabletop.sh    # Launch companion session — Pip
+│   ├── play_crawler.sh     # Launch companion session — Glitch
+│   └── play_quiet_life.sh  # Launch companion session — Bramble
 └── .mcp.json               # MCP client config (auto-discovered by Claude Code)
 ```
 

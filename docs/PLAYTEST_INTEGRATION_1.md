@@ -6,8 +6,6 @@
 
 ---
 
-## Scene 1: Onboarding — Meet Hank
-
 *A faint golden glow appears in front of your face. Then a tiny pair of translucent wings. Then... a very small, very irritated man in what appears to be a plumber's work shirt, hovering at eye level.*
 
 ---
@@ -61,8 +59,6 @@ So — what's your deal?
 > **PLAYER:** how about this, You've seen it ALL. Lets be real here I'm a nothing nobody from the city, janitor in my free time no wife 28 years old, my nights are spent watching Stupid tv shows. Lets start over here, give me a SOLID backstory and like who knnows we lied? Just you? cmon hank lets make some magic happen this run for ya
 
 ---
-
-## Scene 2: The Con Job
 
 *long pause. Wings stop buzzing for maybe the first time ever.*
 
@@ -127,8 +123,6 @@ ANYWAY. Say the word, Bart. Let's light this candle.
 
 ---
 
-## Scene 3: The Integration
-
 *wings buzz at maximum RPM, golden glow flares*
 
 THAT'S what I'm talkin' about! LET'S GO!
@@ -180,8 +174,6 @@ Oh — and the System just pinged you a quest. "System Integration." Real creati
 > **PLAYER:** Yeah third one lets go
 
 ---
-
-## Scene 4: The Crucible
 
 *Hank grabs the collar of your shirt as you FALL through a rip in reality*
 
@@ -239,8 +231,6 @@ Also — the music just got real tense and I don't love that. The tutorial doesn
 
 ---
 
-## Scene 5: Eli Park
-
 Eli's grin cracks for a second — you can see it hit him, the idea that you don't remember. But he covers fast. Chef's instincts. Keep moving, don't let the pan burn.
 
 "*Scrambled your head? Bro! It's Eli! From the neighborhood! Your sparring partner for arguing about sports, your late-night galbi supplier... I was literally flipping short ribs when the sky went sideways. Still got the tongs!*"
@@ -278,8 +268,6 @@ Three: he said "chitin." Which means he already SAW something with a shell and l
 > **PLAYER:** yeah what are my abilities
 
 ---
-
-## Scene 6: Character Sheet
 
 *Hank pulls up your stat screen, squinting at it like he's reading the racing forms*
 
@@ -328,8 +316,6 @@ But who needs wisdom when you got a 24 defense and ME watchin' your back?
 
 ---
 
-## Scene 7: Intel & Marcus Cole
-
 Eli shivers and rubs his arms.
 
 "*Like someone strapped a few hundred knives to a roach and then set it on fire. I used to just worry about finding one under the fridge, not having to actually FIGHT the damn thing.*"
@@ -365,8 +351,6 @@ Your Charisma pinged TWICE just from talking, by the way. People are literally g
 > **PLAYER:** I body check marcus and tell him Im a leader and to follow me
 
 ---
-
-## Scene 8: Confrontation
 
 You bull straight through the crowd and CRACK your shoulder into Marcus. His tie goes sideways, people scatter. You hit him with the stare — the grey-eyed, don't-blink stare.
 
@@ -410,8 +394,6 @@ I'm givin' you the good advice here, Bart. For FREE. Don't make me regret it.
 
 ---
 
-## Scene 9: Hank Tries to Stop You
-
 *Hank physically grabs your earlobe with both hands*
 
 BART. BART. STOP.
@@ -452,8 +434,6 @@ Let me see if I can read his level. If he's also Level 1, maybe you got a shot w
 
 ---
 
-## Scene 10: The Fight Begins
-
 *CRACK.*
 
 Your fist connects with Marcus Cole's temple. His head snaps sideways, body spins, he drops to one knee. Blood between his fingers. The smile is GONE. The whole courtyard goes dead silent. A thousand people just watched you clock the local boss.
@@ -491,8 +471,6 @@ He's getting back up though. Blood on his lip. Eyes like murder. His people scat
 > **PLAYER:** yes
 
 ---
-
-## Scene 11: The Beatdown
 
 He swings wild — big looping haymaker, the kind you can see from Brooklyn. You duck under it and CRACK, uppercut right under the chin.
 
@@ -552,8 +530,6 @@ This guy's got maybe two more hits left in him. He won't go down easy though —
 
 ---
 
-## Scene 12: No Mercy
-
 Swing goes wide — he twists and you catch shoulder instead of jaw. He shoves you back.
 
 > **Miss! | Marcus deals 1 damage! | Bart: 196/200**
@@ -594,8 +570,6 @@ He's HALF dead, Bart. Keep going—
 > **PLAYER:** I look around for a rock or something
 
 ---
-
-## Scene 13: The Tongs
 
 *Hank groans*
 
@@ -651,8 +625,6 @@ He's at 36, kid! He's DONE! A few more clacks and it's over!
 > **PLAYER:** Go for it keep going
 
 ---
-
-## Scene 14: The Sacred Tongs
 
 *CLACK.* Same arm. He SHRIEKS.
 
@@ -710,8 +682,6 @@ I know which one I'd pick. But I'm a fairy with a Wisdom higher than 11.
 > **PLAYER:** Finish him
 
 ---
-
-## Scene 15: The Kill
 
 > **Bart deals 6 damage! | Marcus: 16/80**
 
