@@ -713,6 +713,31 @@ internal data class ProfessionEvolution(
 )
 
 /**
+ * A fully dynamic class definition. The GM generates these — no hardcoded list.
+ * PlayerClass enum remains as the internal archetype for combat math only.
+ */
+@Serializable
+internal data class DynamicClassInfo(
+    val name: String,
+    val description: String,
+    val archetype: ClassArchetype = ClassArchetype.COMBAT,
+    val traits: List<ClassTrait> = emptyList(),
+    val evolutionHints: List<String> = emptyList(),  // Narrative hints for future class evolution
+    val physicalMutations: List<String> = emptyList() // Visual/physical changes (e.g. "eyes glow faintly blue")
+)
+
+/**
+ * A class trait — passive bonus, unique ability, or flavor that shapes gameplay.
+ */
+@Serializable
+internal data class ClassTrait(
+    val name: String,
+    val description: String,
+    val mechanicalEffect: String = "",  // Short machine-readable effect (e.g. "+2 STR in darkness", "regen 1 HP/turn")
+    val isPhysical: Boolean = false     // Does this trait change the character's body?
+)
+
+/**
  * Evolution choice at tier-up
  */
 @Serializable

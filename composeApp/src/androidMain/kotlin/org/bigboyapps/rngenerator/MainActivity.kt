@@ -15,6 +15,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
+import org.bigboyapps.rngenerator.auth.AuthStore
+import org.bigboyapps.rngenerator.auth.AuthStoreProvider
 import org.bigboyapps.rngenerator.audio.MusicPlayer
 import org.bigboyapps.rngenerator.service.GameSessionService
 import org.bigboyapps.rngenerator.service.ServiceGameConnection
@@ -39,6 +41,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        // Init auth store
+        AuthStore.init(applicationContext)
+        AuthStoreProvider.init(AuthStore())
 
         // Init music player context
         MusicPlayer.initContext(applicationContext)

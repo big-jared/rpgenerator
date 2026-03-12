@@ -51,11 +51,15 @@ class GameSessionService : Service() {
         createNotificationChannel()
     }
 
-    fun startSession(serverUrl: String, sessionId: String) {
-        startForegroundWithNotification()
+    /**
+     * Create a GeminiLiveConnection and wire up forwarding.
+     * Called by both startSession and startReceptionistSession.
+     */
+    private fun ensureConnection(): GeminiLiveConnection {
+        connection?.let { return it }
 
-        val apiClient = GameApiClient(serverUrl)
         val apiKey = BuildConfig.GOOGLE_API_KEY
+        val apiClient = GameApiClient("") // placeholder — receptionist doesn't need server
         val conn = GeminiLiveConnection(apiClient, apiKey)
         connection = conn
 
@@ -76,8 +80,42 @@ class GameSessionService : Service() {
             }
         }
 
+        return conn
+    }
+
+    fun startReceptionistSession(prompt: String) {
+        startForegroundWithNotification()
+        val conn = ensureConnection()
+        conn.startReceptionistSession(prompt)
+    }
+
+    fun startSession(serverUrl: String, sessionId: String) {
+        startForegroundWithNotification()
+
+        // If we already have a connection from receptionist phase, reuse the apiClient
+        if (connection == null) {
+            val apiClient = GameApiClient(serverUrl)
+            val apiKey = BuildConfig.GOOGLE_API_KEY
+            val conn = GeminiLiveConnection(apiClient, apiKey)
+            connection = conn
+
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+            forwardScope = scope
+
+            scope.launch {
+                conn.connectionState.collect { state ->
+                    _connectionState.value = state
+                }
+            }
+            scope.launch {
+                conn.messages.collect { msg ->
+                    _messages.emit(msg)
+                }
+            }
+        }
+
         // Start the Gemini Live connection
-        conn.startSession(serverUrl, sessionId)
+        connection!!.startSession(serverUrl, sessionId)
     }
 
     suspend fun sendConnect(voiceName: String = "Kore") {
@@ -132,6 +170,19 @@ class GameSessionService : Service() {
             description = "Keeps the game connection alive in the background"
         }
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+    }
+
+    /**
+     * Disconnect and tear down the current session without destroying the service.
+     */
+    fun teardown() {
+        connection?.close()
+        connection = null
+        forwardScope?.cancel()
+        forwardScope = null
+        _connectionState.value = GameWebSocketClient.ConnectionState.DISCONNECTED
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {

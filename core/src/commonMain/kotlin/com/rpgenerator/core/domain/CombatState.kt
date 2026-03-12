@@ -1,5 +1,6 @@
 package com.rpgenerator.core.domain
 
+import com.rpgenerator.core.skill.DamageType
 import kotlinx.serialization.Serializable
 
 /**
@@ -54,8 +55,13 @@ internal data class Enemy(
     val abilities: List<EnemyAbility> = emptyList(),
     val statusEffects: List<EnemyStatusEffect> = emptyList(),
     val description: String = "", // for narration context
+    val visualDescription: String = "", // for image generation prompts
+    val portraitResource: String? = null, // Compose Resource drawable name
     val xpValue: Long = 0L,
-    val lootTier: String = "normal" // normal, elite, boss
+    val lootTier: String = "normal", // normal, elite, boss
+    val immunities: Set<DamageType> = emptySet(),
+    val vulnerabilities: Set<DamageType> = emptySet(),
+    val resistances: Set<DamageType> = emptySet() // 50% reduction
 ) {
     val hpPercent: Int get() = if (maxHP > 0) (currentHP * 100) / maxHP else 0
 
@@ -78,7 +84,8 @@ internal data class EnemyAbility(
     val damage: Int, // bonus damage when used
     val cooldown: Int = 0, // turns between uses
     val currentCooldown: Int = 0,
-    val description: String = ""
+    val description: String = "",
+    val damageType: DamageType = DamageType.PHYSICAL
 ) {
     val isReady: Boolean get() = currentCooldown <= 0
     fun use(): EnemyAbility = copy(currentCooldown = cooldown)

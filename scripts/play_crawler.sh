@@ -2,9 +2,11 @@
 # Play RPGenerator as Glitch — rogue camera drone companion
 # Seed: Crawler (Dungeon Crawler)
 #
-# Usage: ./scripts/play_crawler.sh [claude|codex]
+# Usage: ./scripts/play_crawler.sh [claude|codex] [voice]
 # Prerequisites: dev server running (./scripts/dev-server.sh)
 set -e
+TTS_VOICE="echo"  # OpenAI clear male — detached camera drone
+TTS_INSTRUCTIONS="Flat, deadpan delivery like a bored TV producer whispering into your earpiece. Detached and clinical, occasionally letting real concern slip through. Think documentary narrator who's seen too many contestants die."
 source "$(cd "$(dirname "$0")" && pwd)/_play_common.sh"
 
 PERSONALITY=$(extract_personality "GlitchCompanion.kt")

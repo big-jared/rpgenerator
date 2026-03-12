@@ -37,6 +37,7 @@ object GameWebSocketHandler {
     }
 
     suspend fun handle(ws: DefaultWebSocketServerSession, session: GameSession) {
+        session.toolCallPending = false
         try {
             for (frame in ws.incoming) {
                 when (frame) {
@@ -46,8 +47,8 @@ object GameWebSocketHandler {
 
                         when (type) {
                             "connect" -> handleConnect(ws, session, msg)
-                            "audio" -> handleAudio(session, msg)
-                            "text" -> handleText(session, msg)
+                            "audio" -> if (!session.toolCallPending) handleAudio(session, msg)
+                            "text" -> if (!session.toolCallPending) handleText(session, msg)
                             "disconnect" -> {
                                 session.disconnect()
                                 ws.send("""{"type": "disconnected"}""")
@@ -55,6 +56,7 @@ object GameWebSocketHandler {
                         }
                     }
                     is Frame.Binary -> {
+                        if (session.toolCallPending) continue
                         // Raw PCM audio bytes (alternative to base64)
                         val gemini = session.geminiSession ?: continue
                         val params = LiveSendRealtimeInputParameters.builder()
@@ -127,21 +129,29 @@ object GameWebSocketHandler {
         session: GameSession,
         message: LiveServerMessage
     ) {
-        // Handle tool calls
+        // Handle tool calls — gate audio IMMEDIATELY before launching handler
         message.toolCall().ifPresent { toolCall ->
+            session.toolCallPending = true
             session.scope.launch {
-                handleToolCall(ws, session, toolCall)
+                try {
+                    handleToolCall(ws, session, toolCall)
+                } finally {
+                    session.toolCallPending = false
+                }
             }
         }
 
         // Handle server content (text + audio)
         message.serverContent().ifPresent { content ->
             if (content.interrupted().orElse(false)) {
+                session.audioMuted = true
                 session.scope.launch { ws.send("""{"type": "interrupted"}""") }
                 return@ifPresent
             }
 
             content.modelTurn().ifPresent { modelTurn ->
+                // New model turn — unmute audio
+                session.audioMuted = false
                 modelTurn.parts().ifPresent { parts ->
                     for (part in parts) {
                         // Text
@@ -151,12 +161,14 @@ object GameWebSocketHandler {
                             }
                         }
 
-                        // Audio
-                        part.inlineData().ifPresent { blob ->
-                            blob.data().ifPresent { audioBytes ->
-                                val b64 = Base64.getEncoder().encodeToString(audioBytes)
-                                session.scope.launch {
-                                    ws.send("""{"type": "audio", "data": "$b64"}""")
+                        // Audio — base64 JSON (drop if muted from interruption)
+                        if (!session.audioMuted) {
+                            part.inlineData().ifPresent { blob ->
+                                blob.data().ifPresent { audioBytes ->
+                                    val b64 = Base64.getEncoder().encodeToString(audioBytes)
+                                    session.scope.launch {
+                                        ws.send("""{"type": "audio", "data": "$b64"}""")
+                                    }
                                 }
                             }
                         }

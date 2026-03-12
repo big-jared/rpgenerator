@@ -16,40 +16,68 @@ import com.rpgenerator.composeapp.generated.resources.medievalsharp_regular
 // ── Colors ──────────────────────────────────────────────────────
 
 object AppColors {
-    // Primary
-    val primary = Color(0xFF5C3D2E)        // rich brown
-    val primaryLight = Color(0xFF8B6F4E)    // warm tan
-    val accent = Color(0xFFC49A6C)          // gold accent
+    // Parchment palette
+    val parchmentLight = Color(0xFFF2EDE6)
+    val parchment = Color(0xFFEAE5DD)
+    val parchmentDark = Color(0xFFD8D2C9)
+    val parchmentEdge = Color(0xFFB89B6A)
 
-    // Background
-    val background = Color(0xFFF5EFE0)      // warm parchment
-    val surface = Color(0xFFEDE5D4)         // slightly darker parchment
-    val surfaceCard = Color(0xFFE8DFC8)     // card surfaces
+    // Bronze / gold
+    val bronze = Color(0xFF8B6914)
+    val bronzeLight = Color(0xFFC49A4C)
+    val bronzeDark = Color(0xFF6B4E10)
+    val gold = Color(0xFFD4A843)
 
-    // Text
-    val textPrimary = Color(0xFF2C1810)     // deep brown-black
-    val textSecondary = Color(0xFF6B5744)   // medium brown
-    val textMuted = Color(0xFF9E8E7A)       // light brown
+    // Leather / wood
+    val leather = Color(0xFF6B4226)
+    val leatherLight = Color(0xFF8B6040)
+    val leatherDark = Color(0xFF4A2D18)
+    val wood = Color(0xFF5C3D2E)
+
+    // Ink
+    val inkDark = Color(0xFF3A2315)
+    val inkMedium = Color(0xFF5A4A3A)
+    val inkFaded = Color(0xFF7A6B5A)
+    val inkMuted = Color(0xFF9E8E7A)
 
     // Semantic
-    val hpRed = Color(0xFFC0392B)
-    val energyBlue = Color(0xFF2980B9)
-    val xpGreen = Color(0xFF27AE60)
-    val questGold = Color(0xFFD4A843)
-    val npcCyan = Color(0xFF1ABC9C)
-    val rarityUncommon = Color(0xFF27AE60)
-    val rarityRare = Color(0xFF2980B9)
-    val rarityEpic = Color(0xFF8E44AD)
-    val rarityLegendary = Color(0xFFE67E22)
+    val hpRed = Color(0xFFC23A22)
+    val hpRedDark = Color(0xFF8B2A18)
+    val manaBlue = Color(0xFF3B7BB8)
+    val manaBlueDark = Color(0xFF2A5A8B)
+    val xpGreen = Color(0xFF4A8B3A)
+    val xpGreenDark = Color(0xFF3A6B2A)
 
-    // UI
-    val error = Color(0xFFC0392B)
-    val divider = Color(0xFFD4C9B4)
-    val buttonPrimary = Color(0xFF5C3D2E)
-    val buttonText = Color(0xFFF5EFE0)
-    val micIdle = Color(0xFFBDA68E)
-    val micActive = Color(0xFFC0392B)
-    val micSpeaking = Color(0xFF5C3D2E)
+    // Rarity
+    val rarityCommon = Color(0xFF7A6B5A)
+    val rarityUncommon = Color(0xFF4A8B3A)
+    val rarityRare = Color(0xFF3B7BB8)
+    val rarityEpic = Color(0xFF8B4A8B)
+    val rarityLegendary = Color(0xFFD4A843)
+
+    // NPC
+    val npcName = Color(0xFF8B6914)
+
+    // Backward compat aliases
+    val primary = wood
+    val primaryLight = bronzeLight
+    val accent = gold
+    val background = parchmentLight
+    val surface = parchment
+    val surfaceCard = parchmentDark
+    val textPrimary = inkDark
+    val textSecondary = inkMedium
+    val textMuted = inkMuted
+    val questGold = gold
+    val npcCyan = Color(0xFF1ABC9C)
+    val energyBlue = manaBlue
+    val error = hpRed
+    val divider = parchmentEdge
+    val buttonPrimary = leather
+    val buttonText = parchmentLight
+    val micIdle = parchmentDark
+    val micActive = hpRed
+    val micSpeaking = leather
     val overlay = Color(0x99000000)
     val notificationBg = Color(0xE6EDE5D4)
     val subtitleBg = Color(0xCC2C1810)
@@ -74,16 +102,16 @@ fun appTypography(): Typography {
     val body = adventureBodyFamily()
 
     return Typography(
-        displayLarge = TextStyle(fontFamily = heading, fontSize = 42.sp, fontWeight = FontWeight.Normal, color = AppColors.primary),
-        headlineLarge = TextStyle(fontFamily = heading, fontSize = 28.sp, fontWeight = FontWeight.Normal, color = AppColors.primary),
-        headlineMedium = TextStyle(fontFamily = heading, fontSize = 22.sp, fontWeight = FontWeight.Normal, color = AppColors.primary),
-        titleLarge = TextStyle(fontFamily = body, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AppColors.textPrimary),
-        titleMedium = TextStyle(fontFamily = body, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.textPrimary),
-        bodyLarge = TextStyle(fontFamily = body, fontSize = 16.sp, fontWeight = FontWeight.Normal, color = AppColors.textPrimary),
-        bodyMedium = TextStyle(fontFamily = body, fontSize = 14.sp, fontWeight = FontWeight.Normal, color = AppColors.textSecondary),
-        bodySmall = TextStyle(fontFamily = body, fontSize = 12.sp, fontWeight = FontWeight.Normal, color = AppColors.textMuted),
-        labelLarge = TextStyle(fontFamily = body, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = AppColors.textPrimary),
-        labelMedium = TextStyle(fontFamily = body, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AppColors.textSecondary),
-        labelSmall = TextStyle(fontFamily = body, fontSize = 10.sp, fontWeight = FontWeight.Normal, color = AppColors.textMuted)
+        displayLarge = TextStyle(fontFamily = heading, fontSize = 42.sp, fontWeight = FontWeight.Normal, color = AppColors.inkDark),
+        headlineLarge = TextStyle(fontFamily = heading, fontSize = 28.sp, fontWeight = FontWeight.Normal, color = AppColors.inkDark),
+        headlineMedium = TextStyle(fontFamily = heading, fontSize = 22.sp, fontWeight = FontWeight.Normal, color = AppColors.inkDark),
+        titleLarge = TextStyle(fontFamily = body, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AppColors.inkDark),
+        titleMedium = TextStyle(fontFamily = body, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.inkDark),
+        bodyLarge = TextStyle(fontFamily = body, fontSize = 16.sp, fontWeight = FontWeight.Normal, color = AppColors.inkDark),
+        bodyMedium = TextStyle(fontFamily = body, fontSize = 14.sp, fontWeight = FontWeight.Normal, color = AppColors.inkMedium),
+        bodySmall = TextStyle(fontFamily = body, fontSize = 12.sp, fontWeight = FontWeight.Normal, color = AppColors.inkFaded),
+        labelLarge = TextStyle(fontFamily = body, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = AppColors.inkDark),
+        labelMedium = TextStyle(fontFamily = body, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AppColors.inkMedium),
+        labelSmall = TextStyle(fontFamily = body, fontSize = 10.sp, fontWeight = FontWeight.Normal, color = AppColors.inkFaded)
     )
 }

@@ -2,9 +2,11 @@
 # Play RPGenerator as Bramble — fluffy forest spirit companion
 # Seed: Quiet Life (Cozy Apocalypse)
 #
-# Usage: ./scripts/play_quiet_life.sh [claude|codex]
+# Usage: ./scripts/play_quiet_life.sh [claude|codex] [voice]
 # Prerequisites: dev server running (./scripts/dev-server.sh)
 set -e
+TTS_VOICE="shimmer"  # OpenAI warm female — gentle forest spirit
+TTS_INSTRUCTIONS="Soft, warm, and gentle. Like a cozy grandmother who also happens to be a small fluffy forest creature. Speak at a brisk, lively pace — quick but clear. Occasionally makes small happy sounds."
 source "$(cd "$(dirname "$0")" && pwd)/_play_common.sh"
 
 PERSONALITY=$(extract_personality "BrambleCompanion.kt")

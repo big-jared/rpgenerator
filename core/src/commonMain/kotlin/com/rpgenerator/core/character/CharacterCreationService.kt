@@ -78,6 +78,26 @@ internal object CharacterCreationService {
             StatAllocation.RANDOM -> generateRandomStats()
         }
 
+        // Roll backstory-influenced stats (random dice, backstory tilts the rolls)
+        val backstoryRolls = inferStatsFromBackstory(options.backstory ?: "")
+
+        // Merge: use base stats as floor, backstory rolls as bonus on top
+        // For preset allocations, backstory rolls add variance (+/- a few points)
+        // For RANDOM allocation, backstory rolls replace the base entirely
+        val finalStats = if (options.statAllocation == StatAllocation.RANDOM) {
+            backstoryRolls // Backstory-influenced rolls ARE the stats
+        } else {
+            // Blend: base allocation + scaled backstory influence (roll - 10 gives -7 to +8 range)
+            CustomStats(
+                strength = baseStats.strength + (backstoryRolls.strength - 10) / 2,
+                dexterity = baseStats.dexterity + (backstoryRolls.dexterity - 10) / 2,
+                constitution = baseStats.constitution + (backstoryRolls.constitution - 10) / 2,
+                intelligence = baseStats.intelligence + (backstoryRolls.intelligence - 10) / 2,
+                wisdom = baseStats.wisdom + (backstoryRolls.wisdom - 10) / 2,
+                charisma = baseStats.charisma + (backstoryRolls.charisma - 10) / 2
+            )
+        }
+
         // Apply difficulty modifier
         val difficultyBonus = when (difficulty) {
             Difficulty.EASY -> 2
@@ -87,13 +107,13 @@ internal object CharacterCreationService {
         }
 
         return DomainStats(
-            strength = (baseStats.strength + difficultyBonus).coerceAtLeast(3),
-            dexterity = (baseStats.dexterity + difficultyBonus).coerceAtLeast(3),
-            constitution = (baseStats.constitution + difficultyBonus).coerceAtLeast(3),
-            intelligence = (baseStats.intelligence + difficultyBonus).coerceAtLeast(3),
-            wisdom = (baseStats.wisdom + difficultyBonus).coerceAtLeast(3),
-            charisma = (baseStats.charisma + difficultyBonus).coerceAtLeast(3),
-            defense = calculateBaseDefense(baseStats.dexterity, baseStats.constitution)
+            strength = (finalStats.strength + difficultyBonus).coerceAtLeast(3),
+            dexterity = (finalStats.dexterity + difficultyBonus).coerceAtLeast(3),
+            constitution = (finalStats.constitution + difficultyBonus).coerceAtLeast(3),
+            intelligence = (finalStats.intelligence + difficultyBonus).coerceAtLeast(3),
+            wisdom = (finalStats.wisdom + difficultyBonus).coerceAtLeast(3),
+            charisma = (finalStats.charisma + difficultyBonus).coerceAtLeast(3),
+            defense = calculateBaseDefense(finalStats.dexterity, finalStats.constitution)
         )
     }
 
@@ -130,6 +150,113 @@ internal object CharacterCreationService {
             charisma = rollStat()
         )
     }
+
+    /**
+     * Roll a stat using backstory-influenced dice.
+     * - Advantage stats (strong backstory match): 4d6 drop lowest (avg ~12.2)
+     * - Normal stats (no match): 3d6 (avg ~10.5)
+     * - Disadvantage stats (opposing backstory): 3d6 drop highest, keep 2, +3 floor (avg ~8)
+     * Results are random every time — backstory just tilts the dice.
+     */
+    private enum class RollTier { ADVANTAGE, NORMAL, DISADVANTAGE }
+
+    private fun rollStat(tier: RollTier): Int {
+        val dice = (1..4).map { Random.nextInt(1, 7) }.sorted()
+        return when (tier) {
+            RollTier.ADVANTAGE -> dice.drop(1).sum()           // 4d6 drop lowest
+            RollTier.NORMAL -> dice.drop(1).take(3).sum()      // middle 3 of 4 (effectively 3d6-ish)
+            RollTier.DISADVANTAGE -> (dice.take(3).sum())       // 3 lowest of 4d6
+                .coerceAtLeast(5)                               // floor at 5 so nobody's useless
+        }
+    }
+
+    private data class StatTiers(
+        var strength: RollTier = RollTier.NORMAL,
+        var dexterity: RollTier = RollTier.NORMAL,
+        var constitution: RollTier = RollTier.NORMAL,
+        var intelligence: RollTier = RollTier.NORMAL,
+        var wisdom: RollTier = RollTier.NORMAL,
+        var charisma: RollTier = RollTier.NORMAL
+    )
+
+    private fun inferStatsFromBackstory(backstory: String): CustomStats {
+        val lower = backstory.lowercase()
+        val tiers = StatTiers()
+
+        fun promote(current: RollTier): RollTier = if (current == RollTier.DISADVANTAGE) RollTier.NORMAL else RollTier.ADVANTAGE
+        fun demote(current: RollTier): RollTier = if (current == RollTier.ADVANTAGE) RollTier.NORMAL else RollTier.DISADVANTAGE
+
+        // Physical backgrounds — STR/CON advantage, INT disadvantage
+        if (lower.containsAny("soldier", "military", "warrior", "fighter", "boxer", "wrestler", "bouncer", "bodyguard", "mercenary")) {
+            tiers.strength = promote(tiers.strength); tiers.constitution = promote(tiers.constitution); tiers.intelligence = demote(tiers.intelligence)
+        }
+        if (lower.containsAny("athlete", "runner", "gymnast", "dancer", "acrobat", "parkour", "martial art")) {
+            tiers.dexterity = promote(tiers.dexterity); tiers.strength = promote(tiers.strength)
+        }
+        if (lower.containsAny("laborer", "construction", "miner", "blacksmith", "farmer", "lumberjack", "plumber")) {
+            tiers.strength = promote(tiers.strength); tiers.constitution = promote(tiers.constitution); tiers.charisma = demote(tiers.charisma)
+        }
+        if (lower.containsAny("survivalist", "hunter", "ranger", "outdoors", "camping", "wilderness", "trapper")) {
+            tiers.constitution = promote(tiers.constitution); tiers.wisdom = promote(tiers.wisdom)
+        }
+
+        // Mental backgrounds — INT/WIS advantage, STR disadvantage
+        if (lower.containsAny("scholar", "professor", "scientist", "researcher", "engineer", "programmer", "hacker", "nerd")) {
+            tiers.intelligence = promote(tiers.intelligence); tiers.wisdom = promote(tiers.wisdom); tiers.strength = demote(tiers.strength)
+        }
+        if (lower.containsAny("doctor", "medic", "nurse", "surgeon", "healer", "therapist", "psychologist")) {
+            tiers.wisdom = promote(tiers.wisdom); tiers.intelligence = promote(tiers.intelligence); tiers.strength = demote(tiers.strength)
+        }
+        if (lower.containsAny("monk", "priest", "cleric", "spiritual", "meditation", "philosopher", "sage")) {
+            tiers.wisdom = promote(tiers.wisdom); tiers.charisma = promote(tiers.charisma); tiers.dexterity = demote(tiers.dexterity)
+        }
+        if (lower.containsAny("strategist", "chess", "tactician", "analyst", "detective", "investigator")) {
+            tiers.intelligence = promote(tiers.intelligence); tiers.wisdom = promote(tiers.wisdom)
+        }
+
+        // Social backgrounds — CHA advantage, CON disadvantage
+        if (lower.containsAny("politician", "diplomat", "lawyer", "salesman", "con artist", "actor", "performer", "singer", "celebrity", "influencer")) {
+            tiers.charisma = promote(tiers.charisma); tiers.intelligence = promote(tiers.intelligence); tiers.constitution = demote(tiers.constitution)
+        }
+        if (lower.containsAny("leader", "commander", "captain", "boss", "manager", "ceo", "chief")) {
+            tiers.charisma = promote(tiers.charisma); tiers.wisdom = promote(tiers.wisdom)
+        }
+        if (lower.containsAny("thief", "rogue", "criminal", "pickpocket", "burglar", "assassin", "spy", "smuggler")) {
+            tiers.dexterity = promote(tiers.dexterity); tiers.charisma = promote(tiers.charisma); tiers.wisdom = demote(tiers.wisdom)
+        }
+
+        // Unique backgrounds
+        if (lower.containsAny("fat", "large", "big", "heavy", "obese", "overweight", "sumo", "competitive eat")) {
+            tiers.constitution = promote(tiers.constitution); tiers.strength = promote(tiers.strength); tiers.dexterity = demote(tiers.dexterity)
+        }
+        if (lower.containsAny("small", "tiny", "short", "kid", "child", "young")) {
+            tiers.dexterity = promote(tiers.dexterity); tiers.charisma = promote(tiers.charisma); tiers.strength = demote(tiers.strength)
+        }
+        if (lower.containsAny("old", "elderly", "ancient", "veteran", "retired", "experienced")) {
+            tiers.wisdom = promote(tiers.wisdom); tiers.intelligence = promote(tiers.intelligence); tiers.dexterity = demote(tiers.dexterity)
+        }
+        if (lower.containsAny("noble", "royal", "prince", "princess", "aristocrat", "wealthy", "rich")) {
+            tiers.charisma = promote(tiers.charisma); tiers.intelligence = promote(tiers.intelligence)
+        }
+        if (lower.containsAny("homeless", "street", "orphan", "survivor", "refugee", "poor")) {
+            tiers.constitution = promote(tiers.constitution); tiers.wisdom = promote(tiers.wisdom); tiers.charisma = demote(tiers.charisma)
+        }
+        if (lower.containsAny("crazy", "insane", "psycho", "mental", "psych ward", "asylum", "unstable")) {
+            tiers.wisdom = promote(tiers.wisdom); tiers.charisma = demote(tiers.charisma)
+        }
+
+        return CustomStats(
+            strength = rollStat(tiers.strength),
+            dexterity = rollStat(tiers.dexterity),
+            constitution = rollStat(tiers.constitution),
+            intelligence = rollStat(tiers.intelligence),
+            wisdom = rollStat(tiers.wisdom),
+            charisma = rollStat(tiers.charisma)
+        )
+    }
+
+    private fun String.containsAny(vararg keywords: String): Boolean =
+        keywords.any { this.contains(it) }
 
     /**
      * Calculate base defense from stats.

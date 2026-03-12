@@ -64,18 +64,21 @@ internal class QuestGeneratorAgent(private val llm: LLMInterface) {
 
         return try {
             val response = agentStream.sendMessage(prompt).toList().joinToString("")
+            println("[QuestGenerator] Raw response (${response.length} chars): ${response.take(500)}")
 
             // Extract JSON from response (in case there's extra text)
             val jsonStart = response.indexOf("{")
             val jsonEnd = response.lastIndexOf("}") + 1
 
             if (jsonStart == -1 || jsonEnd <= 0) {
+                println("[QuestGenerator] PARSE FAILED — no JSON object found. Full response:\n$response")
                 // Fallback to template quest
                 return createFallbackQuest(state, questType)
             }
 
             val jsonStr = response.substring(jsonStart, jsonEnd)
             val questData = parseQuestData(jsonStr)
+            println("[QuestGenerator] Parsed quest: name=${questData.name}, type=${questData.type}, target=${questData.enemyOrTarget}")
 
             // Build quest based on LLM response and questData
             buildQuestFromData(questData, state, questType)

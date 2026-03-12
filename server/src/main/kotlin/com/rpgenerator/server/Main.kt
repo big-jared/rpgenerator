@@ -15,8 +15,10 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import com.rpgenerator.core.api.CharacterCreationOptions
 import com.rpgenerator.core.api.ToolDefinition
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlin.time.Duration.Companion.seconds
@@ -284,7 +286,18 @@ fun main() {
                 val session = GameSessionManager.getSession(sessionId)
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 val state = session.game.getState()
-                call.respond(state)
+                // Inject icon URLs for items that have generated icons
+                val scheme = call.request.headers["X-Forwarded-Proto"] ?: "http"
+                val host = call.request.headers["Host"] ?: "localhost:8080"
+                val baseUrl = "$scheme://$host"
+                val stateWithIcons = state.copy(
+                    inventory = state.inventory.map { item ->
+                        if (session.itemIcons.containsKey(item.id)) {
+                            item.copy(iconUrl = "$baseUrl/api/game/$sessionId/icon/${item.id}")
+                        } else item
+                    }
+                )
+                call.respond(stateWithIcons)
             }
 
             // Execute a tool on a game session (for client-side Gemini)
@@ -302,42 +315,88 @@ fun main() {
                 val argsMap: Map<String, Any?> = body.args
                 val result = session.game.executeTool(body.name, argsMap)
 
-                // For image generation tools, generate the image synchronously
-                // and include base64 data in the response
+                // Generic visualPrompt interception — any tool can include a visualPrompt
+                // in its result data, and the server generates the appropriate image type.
                 var imageBase64: String? = null
                 var imageMimeType: String? = null
-                if (body.name == "generate_scene_art" && result.success) {
-                    try {
-                        val description = body.args["description"] ?: ""
-                        val state = session.game.getState()
-                        val imgResult = session.imageService.generateSceneArt(
-                            SceneArtRequest(
-                                locationName = state.location,
-                                description = description
-                            )
-                        )
-                        if (imgResult is ImageResult.Success) {
-                            imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
-                            imageMimeType = imgResult.mimeType
+
+                if (result.success) {
+                    val visualPrompt = result.data["visualPrompt"]?.let { (it as? JsonPrimitive)?.content }
+                    val imageType = result.data["imageType"]?.let { (it as? JsonPrimitive)?.content }
+
+                    if (visualPrompt != null) {
+                        try {
+                            val imgResult = when (imageType) {
+                                "portrait" -> session.imageService.generatePortrait(
+                                    PortraitRequest(name = body.name, appearance = visualPrompt)
+                                )
+                                "scene" -> session.imageService.generateSceneArt(
+                                    SceneArtRequest(locationName = "", description = visualPrompt)
+                                )
+                                "item" -> session.imageService.generateItemArt(
+                                    ItemArtRequest(name = "", description = visualPrompt)
+                                )
+                                else -> null
+                            }
+                            if (imgResult is ImageResult.Success) {
+                                imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
+                                imageMimeType = imgResult.mimeType
+                            }
+                        } catch (e: Exception) {
+                            // Image generation failed — non-fatal, respond without image
                         }
-                    } catch (e: Exception) {
-                        // Image generation failed — non-fatal, respond without image
+                    } else if (body.name == "generate_scene_art") {
+                        // Legacy path: explicit generate_scene_art tool
+                        try {
+                            val description = body.args["description"] ?: ""
+                            val state = session.game.getState()
+                            val imgResult = session.imageService.generateSceneArt(
+                                SceneArtRequest(
+                                    locationName = state.location,
+                                    description = description
+                                )
+                            )
+                            if (imgResult is ImageResult.Success) {
+                                imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
+                                imageMimeType = imgResult.mimeType
+                            }
+                        } catch (_: Exception) {}
+                    } else if (body.name == "generate_portrait") {
+                        // Legacy path: explicit generate_portrait tool
+                        try {
+                            val description = body.args["description"] ?: ""
+                            val imgResult = session.imageService.generatePortrait(
+                                PortraitRequest(name = "", appearance = description)
+                            )
+                            if (imgResult is ImageResult.Success) {
+                                imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
+                                imageMimeType = imgResult.mimeType
+                            }
+                        } catch (_: Exception) {}
                     }
-                } else if (body.name == "generate_portrait" && result.success) {
-                    try {
-                        val description = body.args["description"] ?: ""
-                        val imgResult = session.imageService.generatePortrait(
-                            PortraitRequest(
-                                name = "",
-                                appearance = description
-                            )
-                        )
-                        if (imgResult is ImageResult.Success) {
-                            imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
-                            imageMimeType = imgResult.mimeType
+
+                    // For add_item without a visualPrompt, async-generate a 128px item icon (legacy path)
+                    if (body.name == "add_item" && imageType != "item") {
+                        val itemName = body.args["itemName"] ?: ""
+                        val itemDesc = body.args["description"] ?: "Found item"
+                        val itemRarity = body.args["rarity"] ?: "COMMON"
+                        val itemId = result.data["itemId"]?.let { (it as? JsonPrimitive)?.content }
+                        if (itemId != null && itemName.isNotBlank()) {
+                            session.scope.launch {
+                                try {
+                                    val imgResult = session.imageService.generateItemArt(
+                                        ItemArtRequest(name = itemName, description = itemDesc, rarity = itemRarity),
+                                        iconSize = true
+                                    )
+                                    if (imgResult is ImageResult.Success) {
+                                        session.itemIcons[itemId] = Pair(imgResult.imageData, imgResult.mimeType)
+                                        println("Generated icon for item $itemId ($itemName)")
+                                    }
+                                } catch (e: Exception) {
+                                    println("Item icon generation failed for $itemName: ${e.message}")
+                                }
+                            }
                         }
-                    } catch (e: Exception) {
-                        // Portrait generation failed — non-fatal
                     }
                 }
 
@@ -376,6 +435,49 @@ fun main() {
                 call.respond(response)
             }
 
+            // Get NPC details
+            get("/api/game/{sessionId}/npc/{npcId}") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@get
+                }
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val npcId = call.parameters["npcId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val details = session.game.getNpcDetails(npcId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                call.respond(details)
+            }
+
+            // Serve item icon images
+            get("/api/game/{sessionId}/icon/{itemId}") {
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val itemId = call.parameters["itemId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val icon = session.itemIcons[itemId]
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                call.respondBytes(icon.first, ContentType.parse(icon.second))
+            }
+
+            // ── Internal: Ephemeral MCP bridge for CliProcessLLM tool calls ──
+            post("/internal/mcp/{token}") {
+                val token = call.parameters["token"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest)
+                val body = call.receiveText()
+                val (responseBody, statusCode) = EphemeralMcpBridge.handleRequest(token, body)
+                if (responseBody != null) {
+                    call.respondText(responseBody, ContentType.Application.Json, HttpStatusCode.fromValue(statusCode))
+                } else {
+                    call.respond(HttpStatusCode.Accepted)
+                }
+            }
+
             // ── Debug Image Gallery ──────────────────────────────────
 
             get("/debug/images/{imageId}") {
@@ -410,6 +512,11 @@ fun main() {
                     append("]")
                 }
                 call.respondText(json, ContentType.Application.Json)
+            }
+
+            // WebSocket for receptionist onboarding — no game engine needed
+            webSocket("/ws/receptionist") {
+                ReceptionistWebSocketHandler.handle(this)
             }
 
             // WebSocket for game session — mobile app connects here

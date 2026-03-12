@@ -6,6 +6,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.*
+import org.slf4j.LoggerFactory
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -17,6 +18,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Each MCP session maps to one game session.
  */
 object McpHandler {
+
+    private val log = LoggerFactory.getLogger("McpHandler")
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -86,9 +89,11 @@ object McpHandler {
 
     suspend fun handleRequest(call: RoutingCall) {
         val body = call.receiveText()
+        log.debug("MCP request received, body length={}", body.length)
         val request = try {
             json.parseToJsonElement(body).jsonObject
         } catch (e: Exception) {
+            log.warn("MCP parse error: {}", e.message)
             call.respondText(
                 json.encodeToString(JsonElement.serializer(),errorResponse(JsonNull, -32700, "Parse error: ${e.message}")),
                 ContentType.Application.Json,
@@ -124,17 +129,17 @@ object McpHandler {
                             }
                             if (gameSession != null) {
                                 restored.gameSessionId = gameSession.id
-                                println("Restored MCP session $mcpSessionId → game ${gameSession.id}")
+                                log.info("Restored MCP session {} → game {}", mcpSessionId, gameSession.id)
                             } else {
                                 // DB file missing or corrupt — reset to character creation
                                 restored.gameStarted = false
                                 restored.gameSessionId = null
-                                println("Could not resume game for session $mcpSessionId — reset to character creation")
+                                log.warn("Could not resume game for session {} — reset to character creation", mcpSessionId)
                             }
                         } catch (e: Exception) {
                             restored.gameStarted = false
                             restored.gameSessionId = null
-                            println("Error resuming game for session $mcpSessionId: ${e.message}")
+                            log.error("Error resuming game for session {}: {}", mcpSessionId, e.message, e)
                         }
                     }
                     restored
@@ -148,7 +153,9 @@ object McpHandler {
 
         val method = request["method"]?.jsonPrimitive?.content ?: ""
         val id = request["id"]
+        log.info("MCP method={}, session={}, gameStarted={}", method, mcpSessionId?.take(8), sessionState.gameStarted)
 
+        val methodStart = System.currentTimeMillis()
         val response = when (method) {
             "initialize" -> handleInitialize(request, sessionState)
             "notifications/initialized" -> null
@@ -157,6 +164,10 @@ object McpHandler {
             else -> mcpResponse(id, buildJsonObject {
                 put("error", JsonPrimitive("Unknown method: $method"))
             })
+        }
+        val methodElapsed = System.currentTimeMillis() - methodStart
+        if (methodElapsed > 100) {
+            log.info("MCP method={} completed in {}ms", method, methodElapsed)
         }
 
         if (response != null) {
@@ -241,6 +252,24 @@ object McpHandler {
                 addMCPTool("save_game",
                     "Save current game state to persistent storage",
                     emptyMap()
+                )
+                addMCPTool("abandon_game",
+                    "Abandon the current game and reset the session. Saves the game first so it can be resumed later with load_game. After abandoning, call create_game to start a new adventure.",
+                    mapOf(
+                        "confirm" to ToolParam("boolean", "Must be true to confirm abandoning the game", required = true)
+                    ),
+                    required = listOf("confirm")
+                )
+                addMCPTool("list_saves",
+                    "List all saved game sessions. Shows character name, world, level, and last played time. Use with load_game to resume a previous adventure.",
+                    emptyMap()
+                )
+                addMCPTool("load_game",
+                    "Load a previously saved game by its game ID (from list_saves). Replaces the current session's game with the saved one.",
+                    mapOf(
+                        "gameId" to ToolParam("string", "Game session ID from list_saves", required = true)
+                    ),
+                    required = listOf("gameId")
                 )
                 addMCPTool("get_game_state",
                     "Get current game state: player stats, location, NPCs, quests, inventory. Before start_game, returns character creation progress.",
@@ -339,6 +368,15 @@ object McpHandler {
                     "Compare what the narrator 'thinks' is happening vs actual game state. Shows narrator's system prompt, recent context sent to narrator, and current game state side-by-side. Use to catch narrator drift — describing things that don't match reality.",
                     emptyMap()
                 )
+                addMCPTool("debug_get_tool_log",
+                    "Get chronological log of every tool call this session. Shows who called each tool (GM_AGENT vs EXTERNAL_MCP), what args were passed, whether it succeeded, timing, state changes, and events emitted. Essential for debugging why NPCs weren't spawned, skills weren't granted, etc.",
+                    mapOf(
+                        "lastN" to ToolParam("number", "Only return the last N entries. Omit for full log."),
+                        "toolName" to ToolParam("string", "Filter by tool name (e.g. 'spawn_npc', 'set_class'). Omit for all tools."),
+                        "caller" to ToolParam("string", "Filter by caller: GM_AGENT, EXTERNAL_MCP, EXTERNAL_REST. Omit for all."),
+                        "failedOnly" to ToolParam("boolean", "If true, only show failed tool calls. Omit for all.")
+                    )
+                )
 
                 // QA tools
                 addMCPTool("report_bug",
@@ -367,9 +405,13 @@ object McpHandler {
         val params = request["params"]?.jsonObject
         val toolName = params?.get("name")?.jsonPrimitive?.content ?: ""
         val args = params?.get("arguments")?.jsonObject ?: buildJsonObject {}
+        log.info("TOOL CALL: {} args={}", toolName, args.keys)
 
+        val toolStart = System.currentTimeMillis()
         return try {
             val result = executeTool(toolName, args, sessionState, mcpSessionId)
+            val toolElapsed = System.currentTimeMillis() - toolStart
+            log.info("TOOL DONE: {} in {}ms, result keys={}", toolName, toolElapsed, result.keys)
 
             // Extract image data if present, return as MCP image content block
             val imageBase64 = result["imageBase64"]?.jsonPrimitive?.contentOrNull
@@ -406,6 +448,8 @@ object McpHandler {
                 }
             })
         } catch (e: Exception) {
+            val toolElapsed = System.currentTimeMillis() - toolStart
+            log.error("TOOL ERROR: {} after {}ms: {}", toolName, toolElapsed, e.message, e)
             mcpResponse(id, buildJsonObject {
                 putJsonArray("content") {
                     addJsonObject {
@@ -550,12 +594,19 @@ object McpHandler {
                 // Trigger opening narration by sending blank input
                 // GameOrchestrator.processInput("") plays the intro and returns
                 val introEvents = mutableListOf<JsonObject>()
+                log.info("start_game: triggering opening narration via processInput(\"\")...")
+                val introStart = System.currentTimeMillis()
                 try {
                     session.game.processInput("").collect { event ->
                         introEvents.add(gameEventToJson(event))
+                        log.debug("start_game: intro event: {}", event::class.simpleName)
                     }
+                    val introElapsed = System.currentTimeMillis() - introStart
+                    log.info("start_game: intro narration complete in {}ms, {} events", introElapsed, introEvents.size)
                     session.game.save()
                 } catch (e: Exception) {
+                    val introElapsed = System.currentTimeMillis() - introStart
+                    log.error("start_game: intro narration FAILED after {}ms: {}", introElapsed, e.message, e)
                     // Intro failed but game is still started — log it
                     introEvents.add(buildJsonObject {
                         put("type", JsonPrimitive("system"))
@@ -582,6 +633,155 @@ object McpHandler {
                 return buildJsonObject {
                     put("success", JsonPrimitive(true))
                     put("message", JsonPrimitive("Game saved."))
+                }
+            }
+
+            "abandon_game" -> {
+                val confirm = args["confirm"]?.jsonPrimitive?.booleanOrNull ?: false
+                if (!confirm) {
+                    return buildJsonObject {
+                        put("success", JsonPrimitive(false))
+                        put("error", JsonPrimitive("Set confirm=true to abandon the current game."))
+                    }
+                }
+                if (!sessionState.gameStarted) {
+                    // No active game — just reset creation state
+                    sessionState.gameCreated = false
+                    sessionState.characterName = null
+                    sessionState.backstory = null
+                    sessionState.appearance = null
+                    sessionState.avatarImageId = null
+                    persistSession(mcpSessionId, sessionState)
+                    return buildJsonObject {
+                        put("success", JsonPrimitive(true))
+                        put("message", JsonPrimitive("Session reset. Call create_game to start a new adventure."))
+                    }
+                }
+
+                // Save the current game before abandoning
+                val session = getGameSession(sessionState)
+                session.game.save()
+                val abandonedGameId = sessionState.gameSessionId
+                val abandonedCharacter = sessionState.characterName ?: "Unknown"
+
+                // Remove the game session from memory (DB file persists on disk for load_game)
+                sessionState.gameSessionId?.let { GameSessionManager.removeSession(it) }
+
+                // Reset session state
+                sessionState.gameSessionId = null
+                sessionState.gameCreated = false
+                sessionState.gameStarted = false
+                sessionState.characterName = null
+                sessionState.backstory = null
+                sessionState.appearance = null
+                sessionState.avatarImageId = null
+                persistSession(mcpSessionId, sessionState)
+
+                return buildJsonObject {
+                    put("success", JsonPrimitive(true))
+                    put("abandonedGameId", JsonPrimitive(abandonedGameId ?: ""))
+                    put("abandonedCharacter", JsonPrimitive(abandonedCharacter))
+                    put("message", JsonPrimitive("Game saved and abandoned. Call create_game to start a new adventure, or load_game to resume a previous one."))
+                }
+            }
+
+            "list_saves" -> {
+                val dataDir = SessionStore.getDataDir()
+                val dbFiles = java.io.File(dataDir).listFiles { f -> f.name.startsWith("rpg_") && f.name.endsWith(".db") }
+                    ?: emptyArray()
+
+                val saves = dbFiles.mapNotNull { dbFile ->
+                    try {
+                        val gameId = dbFile.name.removePrefix("rpg_").removeSuffix(".db")
+                        val driver = com.rpgenerator.core.persistence.DriverFactory(dbFile.absolutePath).createDriver()
+                        val client = RPGClient(driver)
+                        val games = client.getGames()
+                        client.close()
+                        games.firstOrNull()?.let { info ->
+                            buildJsonObject {
+                                put("gameId", JsonPrimitive(gameId))
+                                put("playerName", JsonPrimitive(info.playerName))
+                                put("systemType", JsonPrimitive(info.systemType.name))
+                                put("level", JsonPrimitive(info.level))
+                                put("difficulty", JsonPrimitive(info.difficulty.name))
+                                put("lastPlayed", JsonPrimitive(info.lastPlayedAt))
+                                put("createdAt", JsonPrimitive(info.createdAt))
+                                put("playtimeMinutes", JsonPrimitive(info.playtime / 60))
+                            }
+                        }
+                    } catch (e: Exception) {
+                        null // Skip corrupt/unreadable DB files
+                    }
+                }.sortedByDescending { it["lastPlayed"]?.jsonPrimitive?.longOrNull ?: 0L }
+
+                return buildJsonObject {
+                    put("success", JsonPrimitive(true))
+                    put("saveCount", JsonPrimitive(saves.size))
+                    putJsonArray("saves") { saves.forEach { add(it) } }
+                    if (saves.isEmpty()) {
+                        put("message", JsonPrimitive("No saved games found."))
+                    } else {
+                        put("message", JsonPrimitive("Found ${saves.size} saved game(s). Use load_game with a gameId to resume."))
+                    }
+                }
+            }
+
+            "load_game" -> {
+                val gameId = args["gameId"]?.jsonPrimitive?.contentOrNull
+                    ?: return buildJsonObject {
+                        put("success", JsonPrimitive(false))
+                        put("error", JsonPrimitive("gameId is required. Call list_saves to see available games."))
+                    }
+
+                // Check if there's already an active game
+                if (sessionState.gameStarted && sessionState.gameSessionId != null) {
+                    // Save and remove current game first
+                    try {
+                        val currentSession = getGameSession(sessionState)
+                        currentSession.game.save()
+                        GameSessionManager.removeSession(sessionState.gameSessionId!!)
+                    } catch (_: Exception) { /* best effort */ }
+                }
+
+                // Try to resume the saved game
+                val dataDir = SessionStore.getDataDir()
+                val dbPath = "$dataDir/rpg_$gameId.db"
+                if (!java.io.File(dbPath).exists()) {
+                    return buildJsonObject {
+                        put("success", JsonPrimitive(false))
+                        put("error", JsonPrimitive("No save file found for gameId '$gameId'. Call list_saves to see available games."))
+                    }
+                }
+
+                val persisted = PersistedSession(
+                    gameId = gameId,
+                    gameStarted = true,
+                    gameCreated = true
+                )
+
+                val gameSession = GameSessionManager.resumeSession(persisted)
+                    ?: return buildJsonObject {
+                        put("success", JsonPrimitive(false))
+                        put("error", JsonPrimitive("Failed to load game '$gameId'. The save may be corrupted."))
+                    }
+
+                // Update session state
+                val snapshot = gameSession.game.getState()
+                sessionState.gameSessionId = gameSession.id
+                sessionState.gameCreated = true
+                sessionState.gameStarted = true
+                sessionState.characterName = snapshot.playerStats.name
+                persistSession(mcpSessionId, sessionState)
+
+                return buildJsonObject {
+                    put("success", JsonPrimitive(true))
+                    put("gameId", JsonPrimitive(gameId))
+                    put("playerName", JsonPrimitive(snapshot.playerStats.name))
+                    put("level", JsonPrimitive(snapshot.playerStats.level))
+                    put("location", JsonPrimitive(snapshot.location))
+                    put("hp", JsonPrimitive(snapshot.playerStats.health))
+                    put("maxHp", JsonPrimitive(snapshot.playerStats.maxHealth))
+                    put("message", JsonPrimitive("Game loaded! ${snapshot.playerStats.name} (Level ${snapshot.playerStats.level}) at ${snapshot.location}. Use send_player_input to continue playing."))
                 }
             }
 
@@ -712,10 +912,16 @@ object McpHandler {
                         put("error", JsonPrimitive("Empty input. Provide an action or dialogue."))
                     }
                 }
+                log.info("send_player_input: '{}' (len={})", input.take(100), input.length)
+                val inputStart = System.currentTimeMillis()
                 val events = mutableListOf<JsonObject>()
                 session.game.processInput(input).collect { event ->
+                    val eventElapsed = System.currentTimeMillis() - inputStart
+                    log.debug("send_player_input: event {} at +{}ms", event::class.simpleName, eventElapsed)
                     events.add(gameEventToJson(event))
                 }
+                val inputElapsed = System.currentTimeMillis() - inputStart
+                log.info("send_player_input: completed in {}ms, {} events", inputElapsed, events.size)
                 // Auto-save after each input
                 try { session.game.save() } catch (_: Exception) {}
                 return buildJsonObject {
@@ -1335,6 +1541,67 @@ object McpHandler {
                 }
             }
 
+            "debug_get_tool_log" -> {
+                val session = getGameSession(sessionState)
+                val allEntries = session.game.getToolCallLog()
+                val filterTool = args["toolName"]?.jsonPrimitive?.contentOrNull
+                val filterCaller = args["caller"]?.jsonPrimitive?.contentOrNull
+                val failedOnly = args["failedOnly"]?.jsonPrimitive?.booleanOrNull ?: false
+                val lastN = args["lastN"]?.jsonPrimitive?.intOrNull
+
+                var filtered = allEntries
+                if (filterTool != null) {
+                    filtered = filtered.filter { (it["tool"] as? String)?.equals(filterTool, ignoreCase = true) == true }
+                }
+                if (filterCaller != null) {
+                    filtered = filtered.filter { (it["caller"] as? String)?.equals(filterCaller, ignoreCase = true) == true }
+                }
+                if (failedOnly) {
+                    filtered = filtered.filter { (it["success"] as? Boolean) == false }
+                }
+                val entries = if (lastN != null) filtered.takeLast(lastN) else filtered
+
+                buildJsonObject {
+                    put("success", JsonPrimitive(true))
+                    put("totalCalls", JsonPrimitive(allEntries.size))
+                    put("filteredCount", JsonPrimitive(entries.size))
+                    if (filterTool != null) put("filterTool", JsonPrimitive(filterTool))
+                    if (filterCaller != null) put("filterCaller", JsonPrimitive(filterCaller))
+                    if (failedOnly) put("failedOnly", JsonPrimitive(true))
+                    putJsonArray("entries") {
+                        entries.forEach { entry ->
+                            addJsonObject {
+                                put("seq", JsonPrimitive(entry["seq"] as? Int ?: 0))
+                                put("turn", JsonPrimitive(entry["turn"] as? Int ?: 0))
+                                put("tool", JsonPrimitive(entry["tool"] as? String ?: ""))
+                                put("caller", JsonPrimitive(entry["caller"] as? String ?: ""))
+                                put("success", JsonPrimitive(entry["success"] as? Boolean ?: false))
+                                put("elapsedMs", JsonPrimitive(entry["elapsedMs"] as? Long ?: 0))
+                                put("stateChanged", JsonPrimitive(entry["stateChanged"] as? Boolean ?: false))
+                                put("location", JsonPrimitive(entry["location"] as? String ?: ""))
+                                put("playerLevel", JsonPrimitive(entry["playerLevel"] as? Int ?: 0))
+                                put("result", JsonPrimitive(entry["result"] as? String ?: ""))
+                                if (entry["error"] != null) put("error", JsonPrimitive(entry["error"] as String))
+
+                                // Args as object
+                                @Suppress("UNCHECKED_CAST")
+                                val argsMap = entry["args"] as? Map<String, String> ?: emptyMap()
+                                putJsonObject("args") {
+                                    argsMap.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
+                                }
+
+                                // Events as array
+                                @Suppress("UNCHECKED_CAST")
+                                val events = entry["events"] as? List<String> ?: emptyList()
+                                putJsonArray("events") {
+                                    events.forEach { add(JsonPrimitive(it)) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             "report_bug" -> {
                 val title = args["title"]?.jsonPrimitive?.contentOrNull ?: ""
                 val description = args["description"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -1400,10 +1667,16 @@ object McpHandler {
     }
 
     private suspend fun routeThroughEngine(session: GameSession, input: String): JsonObject {
+        log.info("routeThroughEngine: '{}'", input.take(100))
+        val routeStart = System.currentTimeMillis()
         val events = mutableListOf<JsonObject>()
         session.game.processInput(input).collect { event ->
+            val elapsed = System.currentTimeMillis() - routeStart
+            log.debug("routeThroughEngine: event {} at +{}ms", event::class.simpleName, elapsed)
             events.add(gameEventToJson(event))
         }
+        val routeElapsed = System.currentTimeMillis() - routeStart
+        log.info("routeThroughEngine: completed in {}ms, {} events", routeElapsed, events.size)
         return buildJsonObject {
             put("success", JsonPrimitive(true))
             putJsonArray("events") { events.forEach { add(it) } }
@@ -1449,6 +1722,17 @@ object McpHandler {
             is GameEvent.NarratorAudio -> { put("type", JsonPrimitive("narrator_audio")); put("sampleRate", JsonPrimitive(event.sampleRate)) }
             is GameEvent.MusicChange -> { put("type", JsonPrimitive("music_change")); put("mood", JsonPrimitive(event.mood)) }
             is GameEvent.NPCPortrait -> { put("type", JsonPrimitive("npc_portrait")); put("npcName", JsonPrimitive(event.npcName)) }
+            is GameEvent.ItemIconGenerated -> { put("type", JsonPrimitive("item_icon")); put("itemId", JsonPrimitive(event.itemId)); put("iconUrl", JsonPrimitive(event.iconUrl)) }
+            is GameEvent.ToolCallResults -> {
+                put("type", JsonPrimitive("tool_results"))
+                put("results", JsonArray(event.results.map { entry ->
+                    buildJsonObject {
+                        put("toolName", JsonPrimitive(entry.toolName))
+                        put("success", JsonPrimitive(entry.success))
+                        put("data", json.parseToJsonElement(entry.data))
+                    }
+                }))
+            }
         }
     }
 

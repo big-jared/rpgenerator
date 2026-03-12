@@ -56,7 +56,9 @@ data class ToolExecutionResult(
     val success: Boolean,
     val data: JsonObject = JsonObject(emptyMap()),
     val events: List<JsonObject> = emptyList(),
-    val error: String? = null
+    val error: String? = null,
+    val imageBase64: String? = null,
+    val imageMimeType: String? = null
 )
 
 /**
@@ -82,6 +84,44 @@ data class ToolParameterDto(
     val type: String,
     val description: String,
     val required: Boolean = true
+)
+
+/**
+ * Response from GET /api/game/{sessionId}/npc/{npcId}
+ */
+@Serializable
+data class NpcDetailsDto(
+    val id: String,
+    val name: String,
+    val archetype: String = "",
+    val description: String = "",
+    val lore: String = "",
+    val traits: List<String> = emptyList(),
+    val speechPattern: String = "",
+    val motivations: List<String> = emptyList(),
+    val relationshipStatus: String = "Neutral",
+    val affinity: Int = 0,
+    val hasShop: Boolean = false,
+    val shopName: String? = null,
+    val shopItems: List<ShopItemDto> = emptyList(),
+    val questIds: List<String> = emptyList(),
+    val recentConversations: List<ConversationDto> = emptyList()
+)
+
+@Serializable
+data class ShopItemDto(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    val price: Int = 0,
+    val stock: Int = -1,
+    val requiredLevel: Int = 1
+)
+
+@Serializable
+data class ConversationDto(
+    val playerInput: String,
+    val npcResponse: String
 )
 
 /**

@@ -36,6 +36,8 @@ data class EventMetadata(
         is GameEvent.NarratorAudio -> "Audio narration"
         is GameEvent.MusicChange -> "Music: ${event.mood}"
         is GameEvent.NPCPortrait -> "Portrait: ${event.npcName}"
+        is GameEvent.ItemIconGenerated -> "Icon: ${event.itemId}"
+        is GameEvent.ToolCallResults -> event.results.joinToString("; ") { "${it.toolName}: ${it.data.take(100)}" }
     }
 
     companion object {
@@ -112,6 +114,8 @@ data class EventMetadata(
                 is GameEvent.NarratorAudio -> EventCategory.NARRATIVE
                 is GameEvent.MusicChange -> EventCategory.SYSTEM
                 is GameEvent.NPCPortrait -> EventCategory.DIALOGUE
+                is GameEvent.ItemIconGenerated -> EventCategory.INVENTORY
+                is GameEvent.ToolCallResults -> EventCategory.SYSTEM
             }
         }
 
@@ -160,6 +164,8 @@ data class EventMetadata(
                 is GameEvent.NarratorAudio -> EventImportance.LOW
                 is GameEvent.MusicChange -> EventImportance.LOW
                 is GameEvent.NPCPortrait -> EventImportance.LOW
+                is GameEvent.ItemIconGenerated -> EventImportance.LOW
+                is GameEvent.ToolCallResults -> EventImportance.NORMAL
             }
         }
 

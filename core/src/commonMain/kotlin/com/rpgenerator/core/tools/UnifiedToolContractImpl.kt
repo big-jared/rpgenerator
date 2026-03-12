@@ -3,6 +3,12 @@ package com.rpgenerator.core.tools
 import com.rpgenerator.core.api.GameEvent
 import com.rpgenerator.core.api.QuestStatus
 import com.rpgenerator.core.domain.*
+import com.rpgenerator.core.agents.ClassGeneratorAgent
+import com.rpgenerator.core.agents.ItemGeneratorAgent
+import com.rpgenerator.core.agents.LocationGeneratorAgent
+import com.rpgenerator.core.agents.MonsterGeneratorAgent
+import com.rpgenerator.core.agents.SkillGeneratorAgent
+import com.rpgenerator.core.generation.NPCArchetypeGenerator
 import com.rpgenerator.core.rules.CombatEngine
 import com.rpgenerator.core.rules.CombatEvent
 import com.rpgenerator.core.rules.RoundResult
@@ -24,12 +30,31 @@ import kotlinx.serialization.json.*
 internal class UnifiedToolContractImpl(
     private val loreHandler: LoreQueryHandler = LoreQueryHandler(),
     private val rulesEngine: RulesEngine = RulesEngine(),
-    private val combatEngine: CombatEngine = CombatEngine(),
-    private val locationManager: LocationManager = LocationManager()
+    private val bestiary: Bestiary? = IntegrationBestiary,
+    private val combatEngine: CombatEngine = CombatEngine(bestiary = bestiary),
+    private val locationManager: LocationManager = LocationManager(),
+    private val monsterGenerator: MonsterGeneratorAgent? = null,
+    private val npcGenerator: NPCArchetypeGenerator? = null,
+    private val locationGenerator: LocationGeneratorAgent? = null,
+    private val itemGenerator: ItemGeneratorAgent? = null,
+    private val classGenerator: ClassGeneratorAgent? = null,
+    private val skillGenerator: SkillGeneratorAgent? = null,
+    private val enableImageGeneration: Boolean = false
 ) : UnifiedToolContract {
 
+    // ── Tool Call Log ────────────────────────────────────────────────
+    private val _toolCallLog = mutableListOf<ToolCallLogEntry>()
+    private var _sequenceCounter = 0
+    override var currentCaller: ToolCaller = ToolCaller.EXTERNAL_OTHER
+    override var currentTurnNumber: Int = 0
+
+    override val toolCallLog: List<ToolCallLogEntry> get() = _toolCallLog.toList()
+
+    fun clearLog() { _toolCallLog.clear(); _sequenceCounter = 0 }
+
     override suspend fun executeTool(name: String, args: Map<String, Any?>, state: GameState): ToolOutcome {
-        return try {
+        val startTime = currentTimeMillis()
+        val outcome = try {
             when (name) {
                 // ── State Queries ──────────────────────────────────
                 "get_player_stats" -> getPlayerStats(state)
@@ -52,7 +77,8 @@ internal class UnifiedToolContractImpl(
                 "query_lore" -> queryLore(args.str("category"), args.strOpt("filter"), state)
 
                 // ── Combat Actions ────────────────────────────────
-                "start_combat" -> startCombat(args.str("enemyName"), args.int("danger", 3), args.strOpt("description"), state)
+                "start_combat" -> startCombat(args.str("enemyName"), args.int("danger", 3), args.strOpt("description"), args.strOpt("zoneId"), state)
+                "get_bestiary" -> getBestiary(state)
                 "combat_attack" -> combatAttack(state)
                 "combat_use_skill" -> combatUseSkill(args.str("skillId"), state)
                 "combat_flee" -> combatFlee(state)
@@ -84,9 +110,23 @@ internal class UnifiedToolContractImpl(
                 // ── Character Management ──────────────────────────
                 "set_player_name" -> setPlayerName(args.str("name"), state)
                 "set_backstory" -> setBackstory(args.str("backstory"), state)
-                "set_class" -> setClass(args.str("className"), args.strOpt("customName"), state)
+                "set_class" -> setClass(
+                    args.str("className"),
+                    args.strOpt("description"),
+                    args.strOpt("traits"),        // JSON array string or comma-separated
+                    args.strOpt("evolutionHints"),
+                    args.strOpt("physicalChanges"),
+                    state
+                )
+                "suggest_classes" -> suggestClasses(state)
+                "suggest_skills" -> suggestSkills(args.strOpt("context"), state)
                 "set_profession" -> setProfession(args.str("professionName"), state)
                 "add_xp" -> addXP(args.long("amount"), state)
+                "allocate_stat_points" -> allocateStatPoints(
+                    args.int("strength"), args.int("dexterity"), args.int("constitution"),
+                    args.int("intelligence"), args.int("wisdom"), args.int("charisma"),
+                    state
+                )
                 "grant_skill" -> grantSkill(args.str("skillId"), args.strOpt("skillName"), args.strOpt("description"), state)
                 "complete_tutorial" -> completeTutorial(state)
 
@@ -112,6 +152,58 @@ internal class UnifiedToolContractImpl(
         } catch (e: Exception) {
             ToolOutcome(success = false, error = "Tool '$name' failed: ${e.message}")
         }
+
+        // Log every tool call
+        val elapsed = currentTimeMillis() - startTime
+        val argsStr = args.mapValues { (_, v) ->
+            when (v) {
+                is String -> if (v.length > 200) v.take(200) + "..." else v
+                null -> "null"
+                else -> v.toString().let { if (it.length > 200) it.take(200) + "..." else it }
+            }
+        }
+        val entry = ToolCallLogEntry(
+            sequenceNumber = _sequenceCounter++,
+            toolName = name,
+            caller = currentCaller,
+            args = argsStr,
+            success = outcome.success,
+            resultSummary = if (outcome.success) {
+                outcome.data.toString().let { if (it.length > 500) it.take(500) + "..." else it }
+            } else {
+                outcome.error ?: "Unknown error"
+            },
+            error = outcome.error,
+            elapsedMs = elapsed,
+            stateChanged = outcome.newState != null,
+            eventsEmitted = outcome.events.map { event ->
+                when (event) {
+                    is GameEvent.NarratorText -> "NarratorText(${event.text.take(60)})"
+                    is GameEvent.NPCDialogue -> "NPCDialogue(${event.npcName}: ${event.text.take(60)})"
+                    is GameEvent.SystemNotification -> "SystemNotification(${event.text.take(80)})"
+                    is GameEvent.CombatLog -> "CombatLog(${event.text.take(60)})"
+                    is GameEvent.QuestUpdate -> "QuestUpdate(${event.questName}: ${event.status})"
+                    is GameEvent.StatChange -> "StatChange(${event.statName}: ${event.oldValue}→${event.newValue})"
+                    is GameEvent.ItemGained -> "ItemGained(${event.itemName} x${event.quantity})"
+                    is GameEvent.MusicChange -> "MusicChange(${event.mood})"
+                    is GameEvent.SceneImage -> "SceneImage(${event.description.take(40)})"
+                    is GameEvent.NPCPortrait -> "NPCPortrait(${event.npcName})"
+                    is GameEvent.ItemIconGenerated -> "ItemIcon(${event.itemId})"
+                    else -> event::class.simpleName ?: "Unknown"
+                }
+            },
+            location = state.currentLocation.name,
+            playerLevel = state.playerLevel,
+            turnNumber = currentTurnNumber
+        )
+        _toolCallLog.add(entry)
+
+        // Print to stdout for immediate visibility
+        val status = if (outcome.success) "OK" else "FAIL"
+        val argsShort = argsStr.entries.joinToString(", ") { "${it.key}=${it.value.take(50)}" }
+        println("[ToolLog #${entry.sequenceNumber}] ${entry.caller} | $name($argsShort) → $status (${elapsed}ms)${if (outcome.error != null) " ERROR: ${outcome.error}" else ""}${if (outcome.newState != null) " [STATE CHANGED]" else ""}${if (outcome.events.isNotEmpty()) " events=${entry.eventsEmitted}" else ""}")
+
+        return outcome
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -136,6 +228,7 @@ internal class UnifiedToolContractImpl(
             put("profession", JsonPrimitive(sheet.profession.displayName))
             put("grade", JsonPrimitive(sheet.currentGrade.displayName))
             put("isDead", JsonPrimitive(state.isDead))
+            put("unspentStatPoints", JsonPrimitive(sheet.unspentStatPoints))
         }
         return ToolOutcome(success = true, data = data)
     }
@@ -147,7 +240,29 @@ internal class UnifiedToolContractImpl(
             put("level", JsonPrimitive(sheet.level))
             put("xp", JsonPrimitive(sheet.xp))
             put("xpToNextLevel", JsonPrimitive(sheet.xpToNextLevel()))
-            put("class", JsonPrimitive(sheet.playerClass.displayName))
+            put("class", JsonPrimitive(sheet.dynamicClass?.name ?: sheet.playerClass.displayName))
+            put("classDescription", JsonPrimitive(sheet.dynamicClass?.description ?: sheet.playerClass.description))
+            if (sheet.dynamicClass?.traits?.isNotEmpty() == true) {
+                putJsonArray("classTraits") {
+                    for (trait in sheet.dynamicClass!!.traits) {
+                        addJsonObject {
+                            put("name", JsonPrimitive(trait.name))
+                            put("description", JsonPrimitive(trait.description))
+                            if (trait.mechanicalEffect.isNotBlank()) put("effect", JsonPrimitive(trait.mechanicalEffect))
+                        }
+                    }
+                }
+            }
+            if (sheet.dynamicClass?.physicalMutations?.isNotEmpty() == true) {
+                putJsonArray("physicalMutations") {
+                    for (mut in sheet.dynamicClass!!.physicalMutations) add(JsonPrimitive(mut))
+                }
+            }
+            if (sheet.dynamicClass?.evolutionHints?.isNotEmpty() == true) {
+                putJsonArray("evolutionHints") {
+                    for (hint in sheet.dynamicClass!!.evolutionHints) add(JsonPrimitive(hint))
+                }
+            }
             put("profession", JsonPrimitive(sheet.profession.displayName))
             put("grade", JsonPrimitive(sheet.currentGrade.displayName))
             putJsonObject("hp") {
@@ -197,6 +312,7 @@ internal class UnifiedToolContractImpl(
                     }
                 }
             }
+            put("unspentStatPoints", JsonPrimitive(sheet.unspentStatPoints))
         }
         return ToolOutcome(success = true, data = data)
     }
@@ -555,7 +671,7 @@ internal class UnifiedToolContractImpl(
     // COMBAT — MULTI-ROUND SYSTEM
     // ═══════════════════════════════════════════════════════════════════
 
-    private fun startCombat(enemyName: String, danger: Int, description: String?, state: GameState): ToolOutcome {
+    private suspend fun startCombat(enemyName: String, danger: Int, description: String?, zoneId: String?, state: GameState): ToolOutcome {
         if (state.inCombat) {
             return ToolOutcome(success = false, error = "Already in combat with ${state.combatState!!.enemy.name}. Resolve current combat first.")
         }
@@ -563,7 +679,13 @@ internal class UnifiedToolContractImpl(
             return ToolOutcome(success = false, error = "Enemy name cannot be blank")
         }
 
-        val (newState, enemy) = combatEngine.spawnEnemy(enemyName, danger, state)
+        // For non-bestiary enemies, try AI generation for rich enemy data + portrait prompt
+        val template = bestiary?.findEnemy(enemyName, zoneId ?: state.currentLocation.id)
+        val monsterResult = if (template == null && monsterGenerator != null) {
+            try { monsterGenerator.generate(enemyName, danger, state) } catch (_: Exception) { null }
+        } else null
+
+        val (newState, enemy) = combatEngine.spawnEnemy(enemyName, danger, state, zoneId, monsterResult)
         val events = listOf(
             GameEvent.CombatLog("${enemy.name} appears! [HP: ${enemy.currentHP}/${enemy.maxHP}, Danger: ${enemy.danger}]")
         )
@@ -575,12 +697,25 @@ internal class UnifiedToolContractImpl(
             put("enemyAttack", JsonPrimitive(enemy.attack))
             put("enemyDefense", JsonPrimitive(enemy.defense))
             put("enemySpeed", JsonPrimitive(enemy.speed))
+            if (enemy.description.isNotBlank()) put("description", JsonPrimitive(enemy.description))
+            if (enemy.visualDescription.isNotBlank()) put("visualDescription", JsonPrimitive(enemy.visualDescription))
+            enemy.portraitResource?.let { put("portraitResource", JsonPrimitive(it)) }
+            if (enemy.immunities.isNotEmpty()) putJsonArray("immunities") {
+                enemy.immunities.forEach { add(JsonPrimitive(it.name)) }
+            }
+            if (enemy.vulnerabilities.isNotEmpty()) putJsonArray("vulnerabilities") {
+                enemy.vulnerabilities.forEach { add(JsonPrimitive(it.name)) }
+            }
+            if (enemy.resistances.isNotEmpty()) putJsonArray("resistances") {
+                enemy.resistances.forEach { add(JsonPrimitive(it.name)) }
+            }
             putJsonArray("abilities") {
                 enemy.abilities.forEach { ab ->
                     add(buildJsonObject {
                         put("name", JsonPrimitive(ab.name))
                         put("damage", JsonPrimitive(ab.damage))
                         put("cooldown", JsonPrimitive(ab.cooldown))
+                        put("damageType", JsonPrimitive(ab.damageType.name))
                     })
                 }
             }
@@ -596,6 +731,11 @@ internal class UnifiedToolContractImpl(
                         put("energyCost", JsonPrimitive(skill.energyCost))
                     })
                 }
+            }
+            // Visual prompt for server-side portrait generation (non-bestiary enemies only)
+            if (enemy.portraitResource == null && monsterResult?.visualPrompt?.isNotBlank() == true) {
+                put("visualPrompt", JsonPrimitive(monsterResult.visualPrompt))
+                put("imageType", JsonPrimitive("portrait"))
             }
         }
         return ToolOutcome(success = true, data = data, newState = newState, events = events)
@@ -753,6 +893,16 @@ internal class UnifiedToolContractImpl(
             put("enemyHP", JsonPrimitive(combat.enemy.currentHP))
             put("enemyMaxHP", JsonPrimitive(combat.enemy.maxHP))
             put("enemyCondition", JsonPrimitive(combat.enemy.condition))
+            combat.enemy.portraitResource?.let { put("portraitResource", JsonPrimitive(it)) }
+            if (combat.enemy.immunities.isNotEmpty()) putJsonArray("immunities") {
+                combat.enemy.immunities.forEach { add(JsonPrimitive(it.name)) }
+            }
+            if (combat.enemy.vulnerabilities.isNotEmpty()) putJsonArray("vulnerabilities") {
+                combat.enemy.vulnerabilities.forEach { add(JsonPrimitive(it.name)) }
+            }
+            if (combat.enemy.resistances.isNotEmpty()) putJsonArray("resistances") {
+                combat.enemy.resistances.forEach { add(JsonPrimitive(it.name)) }
+            }
             putJsonArray("enemyStatusEffects") {
                 combat.enemy.statusEffects.forEach { e ->
                     add(buildJsonObject {
@@ -942,6 +1092,10 @@ internal class UnifiedToolContractImpl(
             put("playerDied", JsonPrimitive(result.playerDied))
             put("playerHP", JsonPrimitive(result.playerHP))
             put("playerMaxHP", JsonPrimitive(result.playerMaxHP))
+            put("playerMana", JsonPrimitive(newState.characterSheet.resources.currentMana))
+            put("playerMaxMana", JsonPrimitive(newState.characterSheet.resources.maxMana))
+            put("playerEnergy", JsonPrimitive(newState.characterSheet.resources.currentEnergy))
+            put("playerMaxEnergy", JsonPrimitive(newState.characterSheet.resources.maxEnergy))
             put("enemyHP", JsonPrimitive(result.enemyHP))
             put("enemyMaxHP", JsonPrimitive(result.enemyMaxHP))
             put("enemyCondition", JsonPrimitive(result.enemyCondition))
@@ -950,6 +1104,26 @@ internal class UnifiedToolContractImpl(
             if (result.newLevel > 0) put("newLevel", JsonPrimitive(result.newLevel))
             putJsonArray("narrative") {
                 narrativeLines.forEach { add(JsonPrimitive(it)) }
+            }
+            // Include skill cooldown state so GM knows what's available next turn
+            putJsonArray("readySkills") {
+                newState.characterSheet.getReadySkills().forEach { skill ->
+                    add(buildJsonObject {
+                        put("id", JsonPrimitive(skill.id))
+                        put("name", JsonPrimitive(skill.name))
+                        put("manaCost", JsonPrimitive(skill.manaCost))
+                        put("energyCost", JsonPrimitive(skill.energyCost))
+                    })
+                }
+            }
+            putJsonArray("cooldownSkills") {
+                newState.characterSheet.skills.filter { it.currentCooldown > 0 }.forEach { skill ->
+                    add(buildJsonObject {
+                        put("id", JsonPrimitive(skill.id))
+                        put("name", JsonPrimitive(skill.name))
+                        put("cooldownRemaining", JsonPrimitive(skill.currentCooldown))
+                    })
+                }
             }
         }
         return ToolOutcome(success = true, data = data, newState = newState, events = gameEvents)
@@ -989,7 +1163,7 @@ internal class UnifiedToolContractImpl(
     // MOVEMENT
     // ═══════════════════════════════════════════════════════════════════
 
-    private fun moveToLocation(locationName: String, state: GameState): ToolOutcome {
+    private suspend fun moveToLocation(locationName: String, state: GameState): ToolOutcome {
         if (locationName.isBlank()) return ToolOutcome(success = false, error = "Location name cannot be blank")
 
         // First: check existing connections
@@ -1031,25 +1205,41 @@ internal class UnifiedToolContractImpl(
             return ToolOutcome(success = true, data = data, newState = newState, events = events)
         }
 
-        // Third: dynamically generate a new location (dungeon floors, unexplored areas)
-        // This enables dungeon crawlers and seed worlds where locations aren't pre-defined
-        val newId = "dynamic_${locationName.lowercase().replace(Regex("[^a-z0-9]"), "_")}_${currentTimeMillis()}"
-        val dangerLevel = (state.playerLevel + 1).coerceAtMost(20)
-        val newLocation = Location(
-            id = newId,
-            name = locationName,
-            zoneId = state.currentLocation.zoneId,
-            biome = inferBiome(locationName, state),
-            description = "A newly discovered area: $locationName",
-            danger = dangerLevel,
-            connections = listOf(state.currentLocation.id),  // connect back to where we came from
-            features = emptyList(),
-            lore = ""
-        )
+        // Third: dynamically generate a new location
+        // Try AI generation first for rich description + scene art prompt
+        val generated = if (locationGenerator != null) {
+            try { locationGenerator.generateLocation(state.currentLocation, locationName, state) } catch (_: Exception) { null }
+        } else null
+
+        val newLocation: Location
+        val visualPrompt: String?
+
+        if (generated != null) {
+            newLocation = generated.location.copy(
+                connections = listOf(state.currentLocation.id)
+            )
+            visualPrompt = generated.visualPrompt.takeIf { it.isNotBlank() }
+        } else {
+            // Fallback to bare-bones generation
+            val newId = "dynamic_${locationName.lowercase().replace(Regex("[^a-z0-9]"), "_")}_${currentTimeMillis()}"
+            val dangerLevel = (state.playerLevel + 1).coerceAtMost(20)
+            newLocation = Location(
+                id = newId,
+                name = locationName,
+                zoneId = state.currentLocation.zoneId,
+                biome = inferBiome(locationName, state),
+                description = "A newly discovered area: $locationName",
+                danger = dangerLevel,
+                connections = listOf(state.currentLocation.id),
+                features = emptyList(),
+                lore = ""
+            )
+            visualPrompt = null
+        }
 
         // Update the old location to connect to the new one
         val updatedCurrentLocation = state.currentLocation.copy(
-            connections = state.currentLocation.connections + newId
+            connections = state.currentLocation.connections + newLocation.id
         )
 
         val newState = state
@@ -1057,14 +1247,19 @@ internal class UnifiedToolContractImpl(
             .addCustomLocation(updatedCurrentLocation)
             .moveToLocation(newLocation)
 
-        val events = listOf(GameEvent.SystemNotification("Discovered and moved to $locationName"))
+        val events = listOf(GameEvent.SystemNotification("Discovered and moved to ${newLocation.name}"))
         val data = buildJsonObject {
-            put("locationId", JsonPrimitive(newId))
-            put("locationName", JsonPrimitive(locationName))
+            put("locationId", JsonPrimitive(newLocation.id))
+            put("locationName", JsonPrimitive(newLocation.name))
             put("biome", JsonPrimitive(newLocation.biome.name))
-            put("danger", JsonPrimitive(dangerLevel))
+            put("danger", JsonPrimitive(newLocation.danger))
             put("description", JsonPrimitive(newLocation.description))
             put("dynamicallyGenerated", JsonPrimitive(true))
+            // Visual prompt for server-side scene art generation
+            if (visualPrompt != null) {
+                put("visualPrompt", JsonPrimitive(visualPrompt))
+                put("imageType", JsonPrimitive("scene"))
+            }
         }
         return ToolOutcome(success = true, data = data, newState = newState, events = events)
     }
@@ -1452,7 +1647,7 @@ internal class UnifiedToolContractImpl(
         )
     }
 
-    private fun addItem(args: Map<String, Any?>, state: GameState): ToolOutcome {
+    private suspend fun addItem(args: Map<String, Any?>, state: GameState): ToolOutcome {
         val name = args.str("itemName").ifBlank { return ToolOutcome(success = false, error = "itemName required") }
         val desc = args.strOpt("description") ?: "Found item"
         val qty = args.int("quantity", 1)
@@ -1464,6 +1659,13 @@ internal class UnifiedToolContractImpl(
         }
         val itemId = "item_${name.lowercase().replace(" ", "_")}_${currentTimeMillis()}"
         val itemType = inferItemType(name)
+
+        // Try AI enrichment for better description + visual prompt
+        val itemGenResult = if (itemGenerator != null) {
+            try { itemGenerator.generate(name, rarityStr, state) } catch (_: Exception) { null }
+        } else null
+
+        val finalDesc = itemGenResult?.enhancedDescription ?: desc
 
         // Auto-generate equipment stats based on rarity and player level
         val rarityMultiplier = when (rarity) {
@@ -1478,7 +1680,7 @@ internal class UnifiedToolContractImpl(
         val defenseBonus = if (itemType == ItemType.ARMOR) (1 + levelBase * rarityMultiplier * 0.8).toInt() else 0
 
         val item = InventoryItem(
-            id = itemId, name = name, description = desc,
+            id = itemId, name = name, description = finalDesc,
             type = itemType, quantity = qty, rarity = rarity,
             baseDamage = baseDamage,
             defenseBonus = defenseBonus,
@@ -1490,6 +1692,11 @@ internal class UnifiedToolContractImpl(
             put("itemId", JsonPrimitive(itemId))
             put("itemName", JsonPrimitive(name))
             put("quantity", JsonPrimitive(qty))
+            // Visual prompt for server-side item icon generation
+            if (itemGenResult?.visualPrompt?.isNotBlank() == true) {
+                put("visualPrompt", JsonPrimitive(itemGenResult.visualPrompt))
+                put("imageType", JsonPrimitive("item"))
+            }
         }, newState = newState, events = events)
     }
 
@@ -1630,31 +1837,253 @@ internal class UnifiedToolContractImpl(
         "tinkerer" to PlayerClass.ARTIFICER,
         "forge-bound" to PlayerClass.ARTIFICER,
         "forgebound" to PlayerClass.ARTIFICER,
+        "remnant" to PlayerClass.ADAPTER,
+        "mimic" to PlayerClass.ADAPTER,
+        "copycat" to PlayerClass.ADAPTER,
+        "shapeshifter" to PlayerClass.ADAPTER,
+        "berserker" to PlayerClass.SLAYER,
+        "barbarian" to PlayerClass.SLAYER,
+        "necromancer" to PlayerClass.CONTRACTOR,
+        "summoner" to PlayerClass.CONTRACTOR,
+        "druid" to PlayerClass.CULTIVATOR,
+        "shaman" to PlayerClass.CULTIVATOR,
+        "ninja" to PlayerClass.BLADE_DANCER,
+        "samurai" to PlayerClass.BLADE_DANCER,
+        "hacker" to PlayerClass.GLITCH,
+        "psychic" to PlayerClass.PSION,
+        "telepath" to PlayerClass.PSION,
+        "gourmand" to PlayerClass.CULTIVATOR,
+        "devourer" to PlayerClass.CULTIVATOR,
     )
 
-    private fun setClass(className: String, customName: String?, state: GameState): ToolOutcome {
-        val playerClass = try {
-            PlayerClass.valueOf(className.uppercase().replace(" ", "_").replace("-", "_"))
-        } catch (e: IllegalArgumentException) {
-            // Try matching by display name
-            PlayerClass.selectableClasses().find { it.displayName.equals(className, ignoreCase = true) }
-                // Try alias lookup
-                ?: classAliases[className.lowercase().trim()]
-                ?: return ToolOutcome(success = false, error = "Unknown class: $className. Available: ${PlayerClass.selectableClasses().map { "${it.displayName} (${it.name})" }}")
+    // Maps archetype keywords to a base class for stat bonuses when creating fully custom classes
+    private val archetypeDefaults = mapOf(
+        "combat" to PlayerClass.SLAYER,
+        "melee" to PlayerClass.SLAYER,
+        "tank" to PlayerClass.BULWARK,
+        "defense" to PlayerClass.BULWARK,
+        "speed" to PlayerClass.STRIKER,
+        "agility" to PlayerClass.STRIKER,
+        "magic" to PlayerClass.CHANNELER,
+        "caster" to PlayerClass.CHANNELER,
+        "mystic" to PlayerClass.CULTIVATOR,
+        "wisdom" to PlayerClass.CULTIVATOR,
+        "mind" to PlayerClass.PSION,
+        "psychic" to PlayerClass.PSION,
+        "hybrid" to PlayerClass.ADAPTER,
+        "adapt" to PlayerClass.ADAPTER,
+        "survival" to PlayerClass.SURVIVALIST,
+        "support" to PlayerClass.HEALER,
+        "heal" to PlayerClass.HEALER,
+        "craft" to PlayerClass.ARTIFICER,
+        "build" to PlayerClass.ARTIFICER,
+        "lead" to PlayerClass.COMMANDER,
+        "summon" to PlayerClass.CONTRACTOR,
+        "unique" to PlayerClass.GLITCH,
+    )
+
+    private suspend fun suggestClasses(state: GameState): ToolOutcome {
+        if (classGenerator == null) {
+            return ToolOutcome(success = false, error = "Class generator not available. Create classes manually with set_class.")
         }
 
-        val newSheet = state.characterSheet.chooseInitialClass(playerClass)
-        val newState = state.updateCharacterSheet(newSheet)
-        val events = listOf(
-            GameEvent.SystemNotification("Class selected: ${customName ?: playerClass.displayName}")
-        )
+        val suggestions = try {
+            classGenerator.generateClassOptions(state)
+        } catch (_: Exception) {
+            null
+        }
+
+        if (suggestions == null) {
+            return ToolOutcome(success = false, error = "Failed to generate class suggestions. Create classes manually with set_class.")
+        }
 
         val data = buildJsonObject {
-            put("class", JsonPrimitive(playerClass.displayName))
-            put("description", JsonPrimitive(playerClass.description))
-            if (customName != null) put("customName", JsonPrimitive(customName))
+            putJsonArray("classOptions") {
+                for (cls in suggestions) {
+                    addJsonObject {
+                        put("name", JsonPrimitive(cls.name))
+                        put("description", JsonPrimitive(cls.description))
+                        put("archetype", JsonPrimitive(cls.archetype.displayName))
+                        putJsonArray("traits") {
+                            for (trait in cls.traits) {
+                                add(JsonPrimitive("${trait.name}: ${trait.description}"))
+                            }
+                        }
+                        putJsonArray("evolutionHints") {
+                            for (hint in cls.evolutionHints) add(JsonPrimitive(hint))
+                        }
+                        if (cls.physicalMutations.isNotEmpty()) {
+                            putJsonArray("physicalMutations") {
+                                for (mut in cls.physicalMutations) add(JsonPrimitive(mut))
+                            }
+                        }
+                    }
+                }
+            }
+            put("NOTE", JsonPrimitive("Present these options to the player. They can pick one, modify one, or describe their own class. Use set_class with the chosen/custom class details."))
         }
-        return ToolOutcome(success = true, data = data, newState = newState, events = events)
+
+        return ToolOutcome(success = true, data = data)
+    }
+
+    private suspend fun suggestSkills(context: String?, state: GameState): ToolOutcome {
+        if (skillGenerator == null) {
+            return ToolOutcome(success = false, error = "Skill generator not available. Create skills manually with grant_skill.")
+        }
+
+        val classInfo = state.characterSheet.dynamicClass
+        if (classInfo == null) {
+            return ToolOutcome(success = false, error = "No class selected yet. Set a class first with set_class.")
+        }
+
+        val skills = try {
+            if (context != null) {
+                // Generate a custom skill from player description
+                val single = skillGenerator.generateCustomSkill(context, state)
+                single?.let { listOf(it) }
+            } else {
+                // Generate starter skill options
+                skillGenerator.generateStarterSkills(classInfo, state)
+            }
+        } catch (_: Exception) {
+            null
+        }
+
+        if (skills == null) {
+            return ToolOutcome(success = false, error = "Failed to generate skill suggestions. Create skills manually with grant_skill.")
+        }
+
+        val data = buildJsonObject {
+            putJsonArray("skillOptions") {
+                for (skill in skills) {
+                    addJsonObject {
+                        put("name", JsonPrimitive(skill.name))
+                        put("description", JsonPrimitive(skill.description))
+                        put("category", JsonPrimitive(skill.category))
+                        put("costType", JsonPrimitive(skill.costType))
+                        put("cost", JsonPrimitive(skill.cost))
+                        put("cooldown", JsonPrimitive(skill.cooldown))
+                        put("target", JsonPrimitive(skill.target))
+                        putJsonArray("effects") {
+                            for (effect in skill.effectsRaw) {
+                                addJsonObject {
+                                    put("type", JsonPrimitive(effect.type))
+                                    if (effect.base > 0) put("base", JsonPrimitive(effect.base))
+                                    if (effect.damageType != "PHYSICAL") put("damageType", JsonPrimitive(effect.damageType))
+                                    if (effect.scalingStat != "STRENGTH") put("scalingStat", JsonPrimitive(effect.scalingStat))
+                                    if (effect.scalingRatio != 0.5) put("scalingRatio", JsonPrimitive(effect.scalingRatio))
+                                    if (effect.stat.isNotBlank()) put("stat", JsonPrimitive(effect.stat))
+                                    if (effect.amount > 0) put("amount", JsonPrimitive(effect.amount))
+                                    if (effect.duration > 0) put("duration", JsonPrimitive(effect.duration))
+                                }
+                            }
+                            // Fallback: show legacy flat damage/heal if no effects array
+                            if (skill.effectsRaw.isEmpty()) {
+                                if (skill.damage != null && skill.damage > 0) {
+                                    addJsonObject {
+                                        put("type", JsonPrimitive("damage"))
+                                        put("base", JsonPrimitive(skill.damage))
+                                        put("damageType", JsonPrimitive(skill.damageType ?: "PHYSICAL"))
+                                    }
+                                }
+                                if (skill.heal != null && skill.heal > 0) {
+                                    addJsonObject {
+                                        put("type", JsonPrimitive("heal"))
+                                        put("base", JsonPrimitive(skill.heal))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            put("NOTE", JsonPrimitive("Present ALL options to the player with full stats. They choose exactly 2 (or describe their own). Use grant_skill with name+description for each chosen skill."))
+        }
+
+        return ToolOutcome(success = true, data = data)
+    }
+
+    private fun setClass(
+        className: String,
+        description: String?,
+        traitsStr: String?,
+        evolutionHintsStr: String?,
+        physicalChangesStr: String?,
+        state: GameState
+    ): ToolOutcome {
+        // Prevent double class selection stacking stat bonuses
+        if (state.characterSheet.playerClass != PlayerClass.NONE) {
+            return ToolOutcome(success = false, error = "Class already set to '${state.characterSheet.dynamicClass?.name ?: state.characterSheet.playerClass.displayName}'. Cannot change class.")
+        }
+
+        // Resolve the internal archetype for combat math
+        // 1. Try exact enum match → 2. Display name → 3. Alias → 4. Keyword archetype → 5. ADAPTER fallback
+        val baseArchetype = try {
+            PlayerClass.valueOf(className.uppercase().replace(" ", "_").replace("-", "_"))
+        } catch (_: IllegalArgumentException) {
+            PlayerClass.selectableClasses().find { it.displayName.equals(className, ignoreCase = true) }
+                ?: classAliases[className.lowercase().trim()]
+                ?: archetypeDefaults.entries.find { (key, _) -> className.lowercase().contains(key) }?.value
+                ?: PlayerClass.ADAPTER
+        }
+
+        // Parse traits from comma-separated or JSON-like string
+        val traits = traitsStr?.split(",", ";")?.map { raw ->
+            val parts = raw.trim().split(":", limit = 2)
+            if (parts.size == 2) {
+                ClassTrait(name = parts[0].trim(), description = parts[1].trim())
+            } else {
+                ClassTrait(name = raw.trim(), description = raw.trim())
+            }
+        } ?: emptyList()
+
+        val evolutionHints = evolutionHintsStr?.split(",", ";")?.map { it.trim() } ?: emptyList()
+        val physicalChanges = physicalChangesStr?.split(",", ";")?.map { it.trim() } ?: emptyList()
+
+        // Build the dynamic class info
+        val classInfo = DynamicClassInfo(
+            name = className,
+            description = description ?: baseArchetype.description,
+            archetype = baseArchetype.archetype,
+            traits = traits,
+            evolutionHints = evolutionHints,
+            physicalMutations = physicalChanges
+        )
+
+        val newSheet = state.characterSheet.chooseInitialClass(baseArchetype, classInfo)
+        val newState = state.updateCharacterSheet(newSheet)
+
+        return ToolOutcome(
+            success = true,
+            data = buildJsonObject {
+                put("class", JsonPrimitive(className))
+                put("baseArchetype", JsonPrimitive(baseArchetype.displayName))
+                put("description", JsonPrimitive(classInfo.description))
+                if (traits.isNotEmpty()) {
+                    putJsonArray("traits") {
+                        for (trait in traits) {
+                            addJsonObject {
+                                put("name", JsonPrimitive(trait.name))
+                                put("description", JsonPrimitive(trait.description))
+                            }
+                        }
+                    }
+                }
+                if (evolutionHints.isNotEmpty()) {
+                    putJsonArray("evolutionHints") {
+                        for (hint in evolutionHints) add(JsonPrimitive(hint))
+                    }
+                }
+                if (physicalChanges.isNotEmpty()) {
+                    putJsonArray("physicalChanges") {
+                        for (change in physicalChanges) add(JsonPrimitive(change))
+                    }
+                }
+                put("NOTE", JsonPrimitive("Class set. NO skills granted yet — present skill choices to the player. They can pick from suggestions or describe their own. Use grant_skill for each. Aim for 2-3 starter skills."))
+            },
+            newState = newState,
+            events = listOf(GameEvent.SystemNotification("Class selected: $className"))
+        )
     }
 
     private fun setProfession(professionName: String, state: GameState): ToolOutcome {
@@ -1693,11 +2122,73 @@ internal class UnifiedToolContractImpl(
             events.add(GameEvent.SystemNotification("Level up! You are now level ${newState.playerLevel}"))
         }
 
+        val newUnspent = newState.characterSheet.unspentStatPoints
+        val oldUnspent = state.characterSheet.unspentStatPoints
+        if (newUnspent > oldUnspent) {
+            events.add(GameEvent.SystemNotification("Grade advancement! You have ${newUnspent} stat points to allocate."))
+        }
+
         val data = buildJsonObject {
             put("xpGained", JsonPrimitive(amount))
             put("newXP", JsonPrimitive(newState.playerXP))
             put("levelUp", JsonPrimitive(leveledUp))
             put("newLevel", JsonPrimitive(newState.playerLevel))
+            put("unspentStatPoints", JsonPrimitive(newUnspent))
+        }
+        return ToolOutcome(success = true, data = data, newState = newState, events = events)
+    }
+
+    private fun allocateStatPoints(
+        str: Int, dex: Int, con: Int, int_: Int, wis: Int, cha: Int,
+        state: GameState
+    ): ToolOutcome {
+        val totalSpending = str + dex + con + int_ + wis + cha
+        val available = state.characterSheet.unspentStatPoints
+
+        if (totalSpending <= 0) {
+            return ToolOutcome(success = false, data = buildJsonObject {
+                put("error", JsonPrimitive("Must allocate at least 1 stat point"))
+                put("unspentStatPoints", JsonPrimitive(available))
+            })
+        }
+
+        if (totalSpending > available) {
+            return ToolOutcome(success = false, data = buildJsonObject {
+                put("error", JsonPrimitive("Not enough stat points. Trying to spend $totalSpending but only $available available."))
+                put("unspentStatPoints", JsonPrimitive(available))
+            })
+        }
+
+        val allocation = Stats(
+            strength = str, dexterity = dex, constitution = con,
+            intelligence = int_, wisdom = wis, charisma = cha
+        )
+        val newSheet = state.characterSheet.spendStatPoints(allocation)
+        val newState = state.copy(characterSheet = newSheet)
+
+        val events = mutableListOf<GameEvent>()
+        val parts = mutableListOf<String>()
+        if (str > 0) parts.add("STR +$str")
+        if (dex > 0) parts.add("DEX +$dex")
+        if (con > 0) parts.add("CON +$con")
+        if (int_ > 0) parts.add("INT +$int_")
+        if (wis > 0) parts.add("WIS +$wis")
+        if (cha > 0) parts.add("CHA +$cha")
+        events.add(GameEvent.SystemNotification("Stats allocated: ${parts.joinToString(", ")}. ${newSheet.unspentStatPoints} points remaining."))
+
+        val effective = newSheet.effectiveStats()
+        val data = buildJsonObject {
+            put("pointsSpent", JsonPrimitive(totalSpending))
+            put("remaining", JsonPrimitive(newSheet.unspentStatPoints))
+            putJsonObject("newStats") {
+                put("strength", JsonPrimitive(effective.strength))
+                put("dexterity", JsonPrimitive(effective.dexterity))
+                put("constitution", JsonPrimitive(effective.constitution))
+                put("intelligence", JsonPrimitive(effective.intelligence))
+                put("wisdom", JsonPrimitive(effective.wisdom))
+                put("charisma", JsonPrimitive(effective.charisma))
+                put("defense", JsonPrimitive(effective.defense))
+            }
         }
         return ToolOutcome(success = true, data = data, newState = newState, events = events)
     }
@@ -1764,7 +2255,7 @@ internal class UnifiedToolContractImpl(
     // WORLD GENERATION
     // ═══════════════════════════════════════════════════════════════════
 
-    private fun spawnNPC(name: String, role: String, locationId: String, state: GameState): ToolOutcome {
+    private suspend fun spawnNPC(name: String, role: String, locationId: String, state: GameState): ToolOutcome {
         if (name.isBlank()) return ToolOutcome(success = false, error = "NPC name cannot be blank")
 
         // Check if this is a named peer from WorldSeed
@@ -1779,6 +2270,8 @@ internal class UnifiedToolContractImpl(
         val personality: NPCPersonality
         val lore: String
         val greetingContext: String
+        var npcVisualPrompt = ""
+        var npcVisualDescription = ""
 
         if (peer != null) {
             // Named peer — populate full personality from WorldSeed
@@ -1806,27 +2299,48 @@ internal class UnifiedToolContractImpl(
                 if (peer.sharedActivity.isNotBlank()) appendLine("Bond through: ${peer.sharedActivity}")
             }
         } else {
-            // Generic NPC
-            archetype = when (role.lowercase()) {
-                "merchant", "trader", "shopkeeper" -> NPCArchetype.MERCHANT
-                "quest_giver", "quest giver" -> NPCArchetype.QUEST_GIVER
-                "guard", "soldier" -> NPCArchetype.GUARD
-                "innkeeper", "barkeep" -> NPCArchetype.INNKEEPER
-                "blacksmith" -> NPCArchetype.BLACKSMITH
-                "alchemist" -> NPCArchetype.ALCHEMIST
-                "trainer", "teacher" -> NPCArchetype.TRAINER
-                "noble" -> NPCArchetype.NOBLE
-                "scholar" -> NPCArchetype.SCHOLAR
-                "wanderer", "traveler" -> NPCArchetype.WANDERER
-                else -> NPCArchetype.VILLAGER
+            // Generic NPC — try AI generation for rich personality + portrait prompt
+            val generated = if (npcGenerator != null) {
+                try {
+                    npcGenerator.generateForRole(
+                        role = role,
+                        locationId = locationId.ifBlank { state.currentLocation.id },
+                        context = "Zone: ${state.currentLocation.name} (${state.currentLocation.biome.name}). Player level: ${state.playerLevel}"
+                    )
+                } catch (_: Exception) { null }
+            } else null
+
+            if (generated != null) {
+                // Use AI-generated NPC
+                archetype = generated.npc.archetype
+                personality = generated.npc.personality
+                lore = generated.npc.lore
+                greetingContext = generated.npc.greetingContext
+            } else {
+                // Fallback to minimal NPC
+                archetype = when (role.lowercase()) {
+                    "merchant", "trader", "shopkeeper" -> NPCArchetype.MERCHANT
+                    "quest_giver", "quest giver" -> NPCArchetype.QUEST_GIVER
+                    "guard", "soldier" -> NPCArchetype.GUARD
+                    "innkeeper", "barkeep" -> NPCArchetype.INNKEEPER
+                    "blacksmith" -> NPCArchetype.BLACKSMITH
+                    "alchemist" -> NPCArchetype.ALCHEMIST
+                    "trainer", "teacher" -> NPCArchetype.TRAINER
+                    "noble" -> NPCArchetype.NOBLE
+                    "scholar" -> NPCArchetype.SCHOLAR
+                    "wanderer", "traveler" -> NPCArchetype.WANDERER
+                    else -> NPCArchetype.VILLAGER
+                }
+                personality = NPCPersonality(
+                    traits = listOf("neutral"),
+                    speechPattern = "Normal speech",
+                    motivations = listOf("Exists in the world")
+                )
+                lore = ""
+                greetingContext = "Spawned NPC"
             }
-            personality = NPCPersonality(
-                traits = listOf("neutral"),
-                speechPattern = "Normal speech",
-                motivations = listOf("Exists in the world")
-            )
-            lore = ""
-            greetingContext = "Spawned NPC"
+            npcVisualPrompt = generated?.visualPrompt ?: ""
+            npcVisualDescription = generated?.visualDescription ?: ""
         }
 
         val npcId = "npc_${name.lowercase().replace(" ", "_")}_${currentTimeMillis()}"
@@ -1837,7 +2351,9 @@ internal class UnifiedToolContractImpl(
             locationId = locationId.ifBlank { state.currentLocation.id },
             personality = personality,
             lore = lore,
-            greetingContext = greetingContext
+            greetingContext = greetingContext,
+            visualDescription = npcVisualDescription,
+            visualPrompt = npcVisualPrompt
         )
 
         val newState = state.addNPC(npc)
@@ -1852,6 +2368,11 @@ internal class UnifiedToolContractImpl(
                 put("isPeer", JsonPrimitive(true))
                 put("className", JsonPrimitive(peer.className))
                 put("relationship", JsonPrimitive(peer.relationship))
+            }
+            // Visual prompt for server-side portrait generation (non-peer NPCs only)
+            if (peer == null && npcVisualPrompt.isNotBlank()) {
+                put("visualPrompt", JsonPrimitive(npcVisualPrompt))
+                put("imageType", JsonPrimitive("portrait"))
             }
         }
         return ToolOutcome(success = true, data = data, newState = newState, events = events)
@@ -2083,11 +2604,19 @@ internal class UnifiedToolContractImpl(
     // ═══════════════════════════════════════════════════════════════════
 
     private fun generateSceneArt(description: String, state: GameState): ToolOutcome {
-        val event = GameEvent.SceneImage(imageData = ByteArray(0), description = description)
         val data = buildJsonObject {
             put("description", JsonPrimitive(description))
-            put("status", JsonPrimitive("generating"))
+            if (enableImageGeneration) {
+                put("status", JsonPrimitive("generating"))
+            } else {
+                put("status", JsonPrimitive("skipped"))
+                put("reason", JsonPrimitive("Image generation not available in this session"))
+            }
         }
+        if (!enableImageGeneration) {
+            return ToolOutcome(success = true, data = data)
+        }
+        val event = GameEvent.SceneImage(imageData = ByteArray(0), description = description)
         return ToolOutcome(success = true, data = data, events = listOf(event))
     }
 
@@ -2097,6 +2626,79 @@ internal class UnifiedToolContractImpl(
             put("mood", JsonPrimitive(mood))
         }
         return ToolOutcome(success = true, data = data, events = listOf(event))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BESTIARY
+    // ═══════════════════════════════════════════════════════════════════
+
+    private fun getBestiary(state: GameState): ToolOutcome {
+        if (bestiary == null) {
+            return ToolOutcome(success = true, data = buildJsonObject {
+                put("message", JsonPrimitive("No bestiary available"))
+                putJsonArray("enemies") {}
+            })
+        }
+
+        val zoneId = state.currentLocation.id
+        val enemies = bestiary.getEnemiesForZone(zoneId)
+        val boss = bestiary.getBossForZone(zoneId)
+
+        val data = buildJsonObject {
+            put("zoneId", JsonPrimitive(zoneId))
+            put("zoneName", JsonPrimitive(state.currentLocation.name))
+            put("enemyCount", JsonPrimitive(enemies.size))
+            putJsonArray("enemies") {
+                enemies.filter { !it.isBoss }.forEach { tmpl ->
+                    add(buildJsonObject {
+                        put("name", JsonPrimitive(tmpl.name))
+                        put("levelRange", JsonPrimitive("${tmpl.levelRange.first}-${tmpl.levelRange.last}"))
+                        put("danger", JsonPrimitive(tmpl.baseDanger))
+                        put("description", JsonPrimitive(tmpl.description))
+                        put("lootTier", JsonPrimitive(tmpl.lootTier))
+                        tmpl.portraitResource?.let { put("portraitResource", JsonPrimitive(it)) }
+                        if (tmpl.immunities.isNotEmpty()) putJsonArray("immunities") {
+                            tmpl.immunities.forEach { add(JsonPrimitive(it.name)) }
+                        }
+                        if (tmpl.vulnerabilities.isNotEmpty()) putJsonArray("vulnerabilities") {
+                            tmpl.vulnerabilities.forEach { add(JsonPrimitive(it.name)) }
+                        }
+                        if (tmpl.resistances.isNotEmpty()) putJsonArray("resistances") {
+                            tmpl.resistances.forEach { add(JsonPrimitive(it.name)) }
+                        }
+                        putJsonArray("abilities") {
+                            tmpl.abilities.filter { it.unlockPhase == 1 }.forEach { ab ->
+                                add(buildJsonObject {
+                                    put("name", JsonPrimitive(ab.name))
+                                    put("description", JsonPrimitive(ab.description))
+                                    put("damageType", JsonPrimitive(ab.damageType.name))
+                                })
+                            }
+                        }
+                    })
+                }
+            }
+            if (boss != null) {
+                put("boss", buildJsonObject {
+                    put("name", JsonPrimitive(boss.name))
+                    put("level", JsonPrimitive(boss.levelRange.last))
+                    put("danger", JsonPrimitive(boss.baseDanger))
+                    put("description", JsonPrimitive(boss.description))
+                    boss.portraitResource?.let { put("portraitResource", JsonPrimitive(it)) }
+                    put("phases", JsonPrimitive(boss.bossPhases.size))
+                    putJsonArray("phaseDescriptions") {
+                        boss.bossPhases.forEach { phase ->
+                            add(buildJsonObject {
+                                put("phase", JsonPrimitive(phase.phase))
+                                put("hpThreshold", JsonPrimitive("${(phase.hpThreshold * 100).toInt()}%"))
+                                put("description", JsonPrimitive(phase.description))
+                            })
+                        }
+                    }
+                })
+            }
+        }
+        return ToolOutcome(success = true, data = data)
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2134,11 +2736,13 @@ internal class UnifiedToolContractImpl(
         )),
 
         // Combat — Multi-round system
-        UnifiedToolDef("start_combat", "Start combat with an enemy. Creates the enemy with HP, stats, and abilities based on danger level. MUST be called before combat_attack.", listOf(
-            ToolParam("enemyName", "string", "Name of the enemy (e.g. 'Tunnel Rat', 'Floor Boss Gorgath')"),
-            ToolParam("danger", "integer", "Danger level 1-10 (1=rat, 3=goblin, 5=elite, 8+=boss). Scales HP, damage, abilities.", required = false),
-            ToolParam("description", "string", "Brief description for narration", required = false)
+        UnifiedToolDef("start_combat", "Start combat with an enemy. Creates the enemy with HP, stats, and abilities based on danger level. Uses bestiary templates when available for lore-accurate enemies. MUST be called before combat_attack.", listOf(
+            ToolParam("enemyName", "string", "Name of the enemy (e.g. 'Bone Crawler', 'Caldera Tyrant'). Use get_bestiary to see available enemies."),
+            ToolParam("danger", "integer", "Danger level 1-10 (1=rat, 3=goblin, 5=elite, 8+=boss). Scales HP, damage, abilities. Ignored if bestiary match found.", required = false),
+            ToolParam("description", "string", "Brief description for narration", required = false),
+            ToolParam("zoneId", "string", "Zone ID to look up the enemy in the bestiary (default: current location)", required = false)
         )),
+        UnifiedToolDef("get_bestiary", "Get enemies available in the current zone from the bestiary. Shows regular enemies and boss with abilities and descriptions. Use this to know what to spawn."),
         UnifiedToolDef("combat_attack", "Execute one round of basic attack. Player swings, enemy responds. Returns hit/miss, damage, HP for both sides. Call repeatedly for multi-round fights."),
         UnifiedToolDef("combat_use_skill", "Use a skill in combat. Spends resources, applies effects (damage, heal, buff, debuff, DoT), enemy responds. Returns full round results.", listOf(
             ToolParam("skillId", "string", "ID of the skill to use (check readySkills in combat status)")
@@ -2219,15 +2823,30 @@ internal class UnifiedToolContractImpl(
         UnifiedToolDef("set_backstory", "Set or update the player character's backstory", listOf(
             ToolParam("backstory", "string", "The character's backstory, woven from the player's description")
         )),
-        UnifiedToolDef("set_class", "Set the player's class", listOf(
-            ToolParam("className", "string", "Class name or ID"),
-            ToolParam("customName", "string", "Custom display name for the class", required = false)
+        UnifiedToolDef("suggest_classes", "Generate 3 unique class options based on the player's backstory and world. Uses AI to create personalized classes with traits, evolution paths, and physical mutations. Call this BEFORE set_class to give the player options.", emptyList()),
+        UnifiedToolDef("suggest_skills", "Generate skill options for the player. With no context: generates 4-5 starter skills for current class. With context: generates a custom skill from the player's description.", listOf(
+            ToolParam("context", "string", "Optional: player's description of a skill they want. If omitted, generates starter skill options for their class.", required = false)
+        )),
+        UnifiedToolDef("set_class", "Set the player's class. ANY name works — standard or fully custom. System resolves the closest archetype for stat math. After setting class, call suggest_skills to get skill options for the player to choose from.", listOf(
+            ToolParam("className", "string", "Class name — anything goes. Standard names (Slayer, Channeler, Cultivator) or fully custom (Remnant, Blood Weaver, Void Eater, Gourmand). System auto-resolves base archetype for stats."),
+            ToolParam("description", "string", "Class description — what this class IS and how it feels. 1-2 sentences.", required = false),
+            ToolParam("traits", "string", "Comma-separated class traits. Format: 'Trait Name: description, Trait Name: description'. These are passive bonuses or unique abilities. E.g. 'Night Vision: See in complete darkness, Iron Stomach: Immune to poison from food'", required = false),
+            ToolParam("evolutionHints", "string", "Comma-separated hints for how this class could evolve at higher levels. E.g. 'Could become Blood Lord, Could become Crimson Knight'", required = false),
+            ToolParam("physicalChanges", "string", "Comma-separated physical mutations/evolutions this class causes. E.g. 'Eyes glow faintly red, Veins darken visibly when using abilities'", required = false)
         )),
         UnifiedToolDef("set_profession", "Set the player's profession (crafting/gathering/utility specialization)", listOf(
             ToolParam("professionName", "string", "Profession name. Options: ${Profession.selectableProfessions().joinToString(", ") { it.displayName }}")
         )),
         UnifiedToolDef("add_xp", "Award XP to the player", listOf(
             ToolParam("amount", "integer", "Amount of XP to award")
+        )),
+        UnifiedToolDef("allocate_stat_points", "Spend unspent stat points to increase player attributes. Points are earned on grade advancement (D=10, C=20, B=30, A=50, S=100). Player chooses how to distribute.", listOf(
+            ToolParam("strength", "integer", "Points to add to STR", required = false),
+            ToolParam("dexterity", "integer", "Points to add to DEX", required = false),
+            ToolParam("constitution", "integer", "Points to add to CON", required = false),
+            ToolParam("intelligence", "integer", "Points to add to INT", required = false),
+            ToolParam("wisdom", "integer", "Points to add to WIS", required = false),
+            ToolParam("charisma", "integer", "Points to add to CHA", required = false)
         )),
         UnifiedToolDef("grant_skill", "Grant a skill to the player. Use known skill IDs (power_strike, quick_slash, fireball, etc.) or create custom ones with skillName.", listOf(
             ToolParam("skillId", "string", "Skill ID from the skill database, or a unique ID for a new skill"),

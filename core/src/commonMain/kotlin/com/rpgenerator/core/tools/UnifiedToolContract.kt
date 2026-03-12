@@ -19,4 +19,15 @@ internal interface UnifiedToolContract {
      * Get all tool definitions for LLM function calling.
      */
     fun getToolDefinitions(): List<UnifiedToolDef>
+
+    // ── Tool call logging ────────────────────────────────────────────
+
+    /** All tool calls logged this session, in order. */
+    val toolCallLog: List<ToolCallLogEntry>
+
+    /** Set the caller context before executing tools. */
+    var currentCaller: ToolCaller
+
+    /** Set the current turn number for log entries. */
+    var currentTurnNumber: Int
 }

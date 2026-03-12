@@ -18,7 +18,9 @@ internal data class NPC(
     val shop: Shop? = null,
     val questIds: List<String> = emptyList(), // IDs of quests this NPC can give/progress
     val lore: String = "",
-    val greetingContext: String = "" // Additional context for first greeting
+    val greetingContext: String = "", // Additional context for first greeting
+    val visualDescription: String = "", // Physical appearance for narration
+    val visualPrompt: String = "" // Image generation prompt for portrait
 ) {
     /**
      * Add a conversation entry to the NPC's memory.

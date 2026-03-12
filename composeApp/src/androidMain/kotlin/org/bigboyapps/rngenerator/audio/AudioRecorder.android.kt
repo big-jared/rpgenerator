@@ -1,14 +1,14 @@
 package org.bigboyapps.rngenerator.audio
 
-import android.Manifest
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import kotlinx.coroutines.Dispatchers
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
+import co.touchlab.kermit.Logger
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.withContext
 
 /**
  * Android AudioRecord implementation.
@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
  */
 actual class AudioRecorder actual constructor() {
 
+    private val log = Logger.withTag("AudioRecorder")
     private val sampleRate = 16000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
@@ -23,6 +24,8 @@ actual class AudioRecorder actual constructor() {
 
     private var audioRecord: AudioRecord? = null
     private var recordingThread: Thread? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
 
     private val _audioChunks = MutableSharedFlow<ByteArray>(extraBufferCapacity = 32)
     actual val audioChunks: Flow<ByteArray> = _audioChunks.asSharedFlow()
@@ -38,18 +41,36 @@ actual class AudioRecorder actual constructor() {
             chunkSize * 2
         )
 
+        // Try VOICE_COMMUNICATION first (enables AEC on real devices), fall back to MIC (emulators)
         audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            channelConfig,
-            audioFormat,
-            bufferSize
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            sampleRate, channelConfig, audioFormat, bufferSize
         )
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            log.w { "VOICE_COMMUNICATION failed, falling back to MIC" }
+            audioRecord?.release()
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate, channelConfig, audioFormat, bufferSize
+            )
+        }
 
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            log.w { "AudioRecord failed to initialize" }
             audioRecord?.release()
             audioRecord = null
             return
+        }
+
+        // Attach echo cancellation and noise suppression
+        val sessionId = audioRecord!!.audioSessionId
+        if (AcousticEchoCanceler.isAvailable()) {
+            echoCanceler = AcousticEchoCanceler.create(sessionId)?.also { it.enabled = true }
+            log.i { "AcousticEchoCanceler: ${if (echoCanceler != null) "enabled" else "unavailable"}" }
+        }
+        if (NoiseSuppressor.isAvailable()) {
+            noiseSuppressor = NoiseSuppressor.create(sessionId)?.also { it.enabled = true }
+            log.i { "NoiseSuppressor: ${if (noiseSuppressor != null) "enabled" else "unavailable"}" }
         }
 
         isRecording = true
@@ -73,6 +94,10 @@ actual class AudioRecorder actual constructor() {
         isRecording = false
         recordingThread?.join(500)
         recordingThread = null
+        echoCanceler?.release()
+        echoCanceler = null
+        noiseSuppressor?.release()
+        noiseSuppressor = null
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null

@@ -1,5 +1,6 @@
 package com.rpgenerator.server
 
+import com.rpgenerator.core.api.AgentChunk
 import com.rpgenerator.core.api.AgentStream
 import com.rpgenerator.core.api.LLMInterface
 import com.rpgenerator.core.api.LLMToolDef
@@ -121,6 +122,25 @@ private class TrackingAgentStream(
             }
             val fullResponse = chunks.joinToString("")
             agent.messages.add(TrackedMessage("assistant", fullResponse))
+        }
+    }
+
+    override suspend fun sendMessageMultimodal(
+        message: String,
+        generateImage: Boolean
+    ): Flow<AgentChunk> {
+        agent.messages.add(TrackedMessage("user", message))
+
+        val textParts = mutableListOf<String>()
+        val delegateFlow = delegate.sendMessageMultimodal(message, generateImage)
+
+        return flow {
+            delegateFlow.collect { chunk ->
+                if (chunk is AgentChunk.Text) textParts.add(chunk.content)
+                emit(chunk)
+            }
+            val fullResponse = textParts.joinToString("")
+            agent.messages.add(TrackedMessage("assistant", fullResponse + if (generateImage) " [+image]" else ""))
         }
     }
 }

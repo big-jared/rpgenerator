@@ -3,6 +3,7 @@ package com.rpgenerator.core.orchestration
 import com.rpgenerator.core.agents.GMPromptBuilder
 import com.rpgenerator.core.agents.NPCAgent
 import com.rpgenerator.core.agents.NarratorAgent
+import com.rpgenerator.core.api.AgentChunk
 import com.rpgenerator.core.api.AgentStream
 import com.rpgenerator.core.api.GameEvent
 import com.rpgenerator.core.api.LLMInterface
@@ -11,6 +12,7 @@ import com.rpgenerator.core.api.LLMToolDef
 import com.rpgenerator.core.api.LLMToolResult
 import com.rpgenerator.core.api.QuestStatus
 import com.rpgenerator.core.api.SystemType
+import com.rpgenerator.core.api.textOnly
 import com.rpgenerator.core.domain.Biome
 import com.rpgenerator.core.domain.GameState
 import com.rpgenerator.core.domain.ObjectiveType
@@ -44,9 +46,11 @@ import kotlinx.serialization.json.put
 internal class GameOrchestrator(
     private val llm: LLMInterface,
     internal var gameState: GameState,
-    private val toolContract: UnifiedToolContract
+    private val toolContract: UnifiedToolContract,
+    private val resumeEvents: List<GameEvent> = emptyList()
 ) {
     private val worldSeed = gameState.seedId?.let { WorldSeeds.byId(it) }
+    private val isResumedGame = gameState.hasOpeningNarrationPlayed
 
     // Agents — lazy so they only appear in debug UI when used
     private val narratorAgent by lazy { NarratorAgent(llm, worldSeed?.narratorPrompt) }
@@ -56,17 +60,17 @@ internal class GameOrchestrator(
 
     // Phase 1+2: Decision agent — calls tools, prose discarded
     private val decideAgent: AgentStream by lazy {
-        llm.startAgent(GMPromptBuilder.buildDecidePrompt(gameState))
+        llm.startAgent(GMPromptBuilder.buildDecidePrompt(gameState, resumeEvents))
     }
 
     // Phase 3: Narration agent — writes prose from TurnSummary, no tools
     private val narrateAgent: AgentStream by lazy {
-        llm.startAgent(GMPromptBuilder.buildNarratePrompt(gameState))
+        llm.startAgent(GMPromptBuilder.buildNarratePrompt(gameState, resumeEvents))
     }
 
     // Legacy single-call GM agent — kept for backward compatibility (server/MCP path)
     private val gmAgent by lazy {
-        llm.startAgent(GMPromptBuilder.buildSystemPrompt(gameState))
+        llm.startAgent(GMPromptBuilder.buildSystemPrompt(gameState, resumeEvents))
     }
 
     // Tool definitions cached for reuse
@@ -133,6 +137,23 @@ internal class GameOrchestrator(
 
             emitInitialQuestEvents(this)
 
+            // Auto-show character sheet after opening so player sees their rolled stats
+            val sheet = gameState.characterSheet
+            val stats = sheet.effectiveStats()
+            val sheetSummary = buildString {
+                appendLine("[ Character Sheet ]")
+                val className = sheet.dynamicClass?.name ?: sheet.playerClass.displayName
+                appendLine("${gameState.playerName} — Level ${sheet.level} $className")
+                appendLine("HP: ${sheet.resources.currentHP}/${sheet.resources.maxHP} | Mana: ${sheet.resources.currentMana}/${sheet.resources.maxMana}")
+                appendLine("STR ${stats.strength} | DEX ${stats.dexterity} | CON ${stats.constitution} | INT ${stats.intelligence} | WIS ${stats.wisdom} | CHA ${stats.charisma}")
+                if (sheet.skills.isNotEmpty()) {
+                    appendLine("Skills: ${sheet.skills.joinToString(", ") { it.name }}")
+                }
+            }
+            val sheetEvent = GameEvent.SystemNotification(sheetSummary)
+            emit(sheetEvent)
+            eventLog.add(sheetEvent)
+
             // Multimodal atmosphere after opening
             val openingMood = inferOpeningMood(gameState.systemType)
             val musicEvent = GameEvent.MusicChange(mood = openingMood, audioData = null)
@@ -173,6 +194,10 @@ internal class GameOrchestrator(
         val combatEvents = mutableListOf<CombatEvent>()
         // Track items added this turn to block fabrication (add_item → use_item same turn)
         val itemsAddedThisTurn = mutableSetOf<String>()
+
+        // Tag tool calls as coming from the GM agent
+        toolContract.currentCaller = com.rpgenerator.core.tools.ToolCaller.GM_AGENT
+        toolContract.currentTurnNumber = playerTurnCount
 
         val executor: suspend (LLMToolCall) -> LLMToolResult = { call ->
             val args = jsonObjectToMap(call.arguments)
@@ -318,7 +343,34 @@ internal class GameOrchestrator(
             combatRound = combatRound
         )
 
+        // ── Always emit raw tool results so clients have structured data ──
+        if (executedTools.isNotEmpty()) {
+            val toolResultEntries = executedTools.map { tool ->
+                com.rpgenerator.core.api.ToolResultEntry(
+                    toolName = tool.toolName,
+                    success = tool.success,
+                    data = tool.rawData.toString()
+                )
+            }
+            val toolResultsEvent = GameEvent.ToolCallResults(toolResultEntries)
+            emit(toolResultsEvent)
+            eventLog.add(toolResultsEvent)
+        }
+
         // ── Phase 3: NARRATE ─────────────────────────────────────
+        // Skip narrator for character setup and pure queries — the GM/companion
+        // output is sufficient. Narrator only adds value for action/exploration/combat.
+        val skipNarration = turnSummary.turnType in setOf(TurnType.CHARACTER_SETUP, TurnType.QUERY)
+        var narrativeText = ""
+
+        if (skipNarration) {
+            // Emit tool events directly without narrator prose
+            for (event in pendingEvents) {
+                emit(event)
+                eventLog.add(event)
+            }
+        } else {
+
         // Narrator writes prose based on the TurnSummary. No tools.
         val baseNarrationInput = buildNarrationMessage(input, turnSummary, gameState, recentEvents)
 
@@ -345,25 +397,61 @@ internal class GameOrchestrator(
             }
         }
 
-        val narrativeChunks = narrateAgent.sendMessage(narrationInput).toList()
-        val narrativeText = narrativeChunks.joinToString("")
+        // Check if GM requested scene art generation this turn
+        val sceneArtRequested = pendingEvents.any { it is GameEvent.SceneImage }
+        val sceneArtDescription = pendingEvents.filterIsInstance<GameEvent.SceneImage>()
+            .firstOrNull()?.description
 
-        if (narrativeText.isNotBlank()) {
-            val narrativeEvent = GameEvent.NarratorText(narrativeText)
-            emit(narrativeEvent)
-            eventLog.add(narrativeEvent)
-        }
+        if (sceneArtRequested && sceneArtDescription != null) {
+            // Multimodal narration: generate text + inline image
+            val imagePrompt = narrationInput + "\n\n" +
+                "IMPORTANT: Also generate a scene image that matches your narration. " +
+                "The image should be a digital painting, fantasy concept art style, " +
+                "rich colors, dramatic cinematic lighting, painterly brushwork. " +
+                "Scene: $sceneArtDescription"
 
-        // Emit accumulated tool events (items gained, quest updates, combat logs, etc.)
-        // Deduplicate scene images — multiple tools may generate identical scene descriptions
-        val seenSceneDescs = mutableSetOf<String>()
-        for (event in pendingEvents) {
-            if (event is GameEvent.SceneImage) {
-                if (!seenSceneDescs.add(event.description)) continue // skip duplicate
+            val multimodalChunks = narrateAgent.sendMessageMultimodal(imagePrompt, generateImage = true).toList()
+            narrativeText = multimodalChunks.filterIsInstance<AgentChunk.Text>().joinToString("") { it.content }
+            val generatedImages = multimodalChunks.filterIsInstance<AgentChunk.Image>()
+
+            if (narrativeText.isNotBlank()) {
+                val narrativeEvent = GameEvent.NarratorText(narrativeText)
+                emit(narrativeEvent)
+                eventLog.add(narrativeEvent)
             }
-            emit(event)
-            eventLog.add(event)
+
+            // Emit real image data from Gemini's multimodal output
+            for (img in generatedImages) {
+                val imageEvent = GameEvent.SceneImage(imageData = img.data, description = sceneArtDescription)
+                emit(imageEvent)
+                eventLog.add(imageEvent)
+            }
+
+            // Emit non-image pending events only (scene images replaced by real ones above)
+            for (event in pendingEvents) {
+                if (event is GameEvent.SceneImage) continue // replaced by real image
+                emit(event)
+                eventLog.add(event)
+            }
+        } else {
+            // Text-only narration (fast path — most turns)
+            val narrativeChunks = narrateAgent.sendMessage(narrationInput).toList()
+            narrativeText = narrativeChunks.joinToString("")
+
+            if (narrativeText.isNotBlank()) {
+                val narrativeEvent = GameEvent.NarratorText(narrativeText)
+                emit(narrativeEvent)
+                eventLog.add(narrativeEvent)
+            }
+
+            // Emit accumulated tool events
+            for (event in pendingEvents) {
+                emit(event)
+                eventLog.add(event)
+            }
         }
+
+        } // end else (skipNarration)
 
         // ── Phase 3b: AUTO-COMPLETE QUEST OBJECTIVES ─────────────
         // Detect when tool calls satisfy quest objectives the LLM forgot to update.
@@ -538,9 +626,8 @@ internal class GameOrchestrator(
                     // ── Tutorial quest by targetId ──
                     obj.targetId == "class" -> "set_class" in toolNames ||
                             gameState.characterSheet.playerClass != com.rpgenerator.core.domain.PlayerClass.NONE
-                    obj.targetId == "status" -> toolNames.any { it in setOf("get_player_stats", "get_character_sheet") }
-                    obj.targetId == "test" -> hadCombatVictory ||
-                            toolNames.any { it in setOf("combat_use_skill", "use_skill") }
+                    obj.targetId == "status" -> false // GM calls complete_tutorial manually
+                    obj.targetId == "test" -> "complete_tutorial" in toolNames
 
                     // ── Generic objectives by type ──
                     obj.type == ObjectiveType.KILL -> {
@@ -1281,24 +1368,38 @@ internal class GameOrchestrator(
         // The game should feel like a living audiobook, not a combat tutorial.
         // Player sets the pace. No forced combat. Questions and exploration are rewarded.
         return when (turn) {
-            1 -> "=== PACING (Turn 1 — Arrival) ===" +
-                "\nPlayer JUST arrived. They're disoriented. Let them REACT." +
-                "\nDo NOT push action. Let them look around, ask questions, process what happened." +
-                "\nRespond to THEIR energy. If they're confused, be gentle. If they're aggressive, match it." +
-                "\nDo NOT spawn enemies. Do NOT force class selection." +
-                "\nCall query_lore(category='classes') if you need class info." + narratorInfo
+            1 -> "=== PACING (Turn 1 — Class Selection) ===" +
+                "\nPRIORITY: Guide the player toward choosing a class." +
+                "\nACTION: Call get_character_sheet to see the player's current stats." +
+                "\nACTION: Call suggest_classes to generate 4 personalized class options from their backstory." +
+                "\n" +
+                "\nCRITICAL: Present ALL 4 class options at once. Do NOT drip-feed one at a time." +
+                "\nShow each option's name, description, and traits so the player can make an informed choice." +
+                "\nThe player can also describe their own class from scratch (any name works) or modify a suggestion." +
+                "\n" +
+                "\nWhen calling set_class, provide: className, description, traits, evolutionHints, physicalChanges." +
+                "\nIMMEDIATELY after set_class in the SAME TURN: call suggest_skills to generate 4+ personalized skill options." +
+                "\nDo NOT narrate skill options yourself — the suggest_skills tool generates them with proper game mechanics." +
+                "\nDo NOT invent skill names, descriptions, or effects. Only the suggest_skills tool output is canonical." +
+                "\nPlayer picks exactly 2 via grant_skill. They can also describe custom skills." +
+                "\nDo NOT auto-grant skills. Wait for the player to pick." +
+                "\nIf they want to explore first, that's fine — but steer them back to class selection within 1-2 exchanges." +
+                "\nDo NOT spawn enemies. The player has no class and no skills yet." + narratorInfo
 
-            2 -> "=== PACING (Turn 2 — Grounding) ===" +
-                "\nStill early. The player is finding their footing." +
-                "\nAnswer their questions. Describe what they see/hear/smell." +
-                "\nIntroduce ONE interesting detail — an NPC, a sound, a strange object — but don't force interaction." +
-                "\nIf they ask about classes or express a preference, call set_class(). Otherwise, wait." +
-                "\nNo enemies. No urgency. Let the world breathe." + narratorInfo
+            2 -> "=== PACING (Turn 2 — Skills & Grounding) ===" +
+                "\nIf no class yet: PUSH class selection now. Don't let them drift." +
+                "\nIf class is set but no skills: Call suggest_skills to generate options. Do NOT invent skills yourself." +
+                "\nPresent ALL skill options from suggest_skills. Player picks exactly 2 via grant_skill." +
+                "\nIf class and skills are set: Walk them through their stats and skills. Call get_character_sheet if needed." +
+                "\nHelp them understand what their abilities do." +
+                "\nIntroduce ONE interesting detail — an NPC, a sound, a strange object — but keep focus on getting oriented." +
+                "\nNo enemies yet. Let them understand their toolkit first." + narratorInfo
 
-            3 -> "=== PACING (Turn 3 — Discovery) ===" +
-                "\nPlayer should be exploring freely. Follow their lead." +
-                "\nIf they haven't talked to anyone yet, have an NPC approach THEM (curious, not threatening)." +
+            3 -> "=== PACING (Turn 3 — First Steps) ===" +
+                "\nIf no class yet: This is the LAST turn without a class. Present options and insist." +
+                "\nPlayer should know their class, stats, and skills by now." +
                 "\nSpawn an NPC if the scene feels empty. Make them interesting — a person, not a quest terminal." +
+                "\nLight exploration is fine. Hint at what's beyond the starting area." +
                 "\nStill no combat unless the player explicitly picks a fight." + narratorInfo
 
             in 4..6 -> "=== PACING (Turn $turn — Exploration) ===" +

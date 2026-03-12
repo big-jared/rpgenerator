@@ -66,13 +66,15 @@ internal data class TurnSummary(
 
 internal fun inferTurnType(executedTools: List<ToolExecutionResult>): TurnType {
     val toolNames = executedTools.map { it.toolName }.toSet()
+    val setupTools = setOf("set_class", "set_profession", "set_player_name", "set_backstory", "complete_tutorial", "suggest_classes", "suggest_skills")
     return when {
+        // Character setup takes highest priority — narrator must not rewrite structured data
+        toolNames.any { it in setupTools } -> TurnType.CHARACTER_SETUP
         toolNames.any { it in setOf("combat_attack", "combat_use_skill", "combat_flee") } -> TurnType.COMBAT_ROUND
         toolNames.contains("start_combat") -> TurnType.COMBAT_ROUND
         toolNames.contains("move_to_location") -> TurnType.MOVEMENT
         toolNames.any { it in setOf("talk_to_npc", "spawn_npc") } -> TurnType.DIALOGUE
         toolNames.any { it.startsWith("get_") || it == "query_lore" || it == "ask_world" } -> TurnType.QUERY
-        toolNames.any { it in setOf("set_class", "set_profession", "set_player_name", "set_backstory", "complete_tutorial") } -> TurnType.CHARACTER_SETUP
         executedTools.isEmpty() -> TurnType.AMBIENT
         else -> TurnType.EXPLORATION
     }
@@ -102,6 +104,8 @@ internal fun summarizeToolResult(toolName: String, outcome: ToolOutcome): String
         "complete_quest" -> "Quest completed: ${data.str("questName")}"
         "generate_scene_art" -> "Scene art generated"
         "shift_music_mood" -> "Music mood: ${data.str("mood")}"
+        "suggest_classes" -> "Class options generated (player choosing)"
+        "suggest_skills" -> "Skill options generated (player choosing)"
         else -> data.toString().take(200)
     }
 }
@@ -158,14 +162,20 @@ internal fun buildNarrationMessage(
     appendLine("Player said: \"$playerInput\"")
     appendLine()
 
-    // Prevent narrator from re-narrating the opening sequence
+    // Prevent narrator from re-narrating the opening or skipping ahead
     if (gameState.characterSheet.playerClass == com.rpgenerator.core.domain.PlayerClass.NONE) {
-        appendLine("== IMPORTANT: The opening narration has ALREADY been delivered. Do NOT re-narrate the sky splitting, the void, or class selection. The player is IN the world now. Narrate their CURRENT action and its results only. ==")
+        appendLine("== IMPORTANT: The player has NOT chosen a class yet. ==")
+        appendLine("- Do NOT narrate the player choosing a class (it hasn't happened).")
+        appendLine("- Do NOT narrate post-class-selection events (arriving in the world, getting powers, etc.).")
+        appendLine("- Do NOT re-narrate the opening (sky splitting, void, etc.) — it was already delivered.")
+        appendLine("- ONLY narrate the player's CURRENT action and its immediate results.")
+        appendLine("- The player is still in the early moments. Keep it grounded in what they can see and do RIGHT NOW.")
         appendLine()
     }
 
     if (turnSummary.executedTools.isNotEmpty()) {
-        appendLine("== MECHANICAL RESULTS (narrate from these — do NOT invent extra rewards, damage, or NPCs) ==")
+        appendLine("== MECHANICAL RESULTS (narrate from these — do NOT invent ANY game data) ==")
+        appendLine("ONLY use the data below. Do NOT invent: stat values, class names, class descriptions, skill names, damage numbers, item names, NPC names, or any game mechanics. If data isn't in the tool results, it doesn't exist.")
         for (result in turnSummary.executedTools) {
             appendLine("- [${result.toolName}] ${if (result.success) "OK" else "FAILED"}: ${result.resultSummary}")
         }

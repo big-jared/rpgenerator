@@ -104,7 +104,33 @@ sealed class GameEvent {
         val npcName: String,
         val imageData: ByteArray
     ) : GameEvent()
+
+    /**
+     * Item icon generated (async, arrives after item is added).
+     */
+    @Serializable
+    data class ItemIconGenerated(
+        val itemId: String,
+        val iconUrl: String
+    ) : GameEvent()
+
+    /**
+     * Raw tool call results from the GM's turn.
+     * Always emitted so clients have structured data (class options, character sheet, etc.)
+     * independent of whether narration happened.
+     */
+    @Serializable
+    data class ToolCallResults(
+        val results: List<ToolResultEntry>
+    ) : GameEvent()
 }
+
+@Serializable
+data class ToolResultEntry(
+    val toolName: String,
+    val success: Boolean,
+    val data: String  // JSON string of the tool's result data
+)
 
 @Serializable
 enum class QuestStatus {

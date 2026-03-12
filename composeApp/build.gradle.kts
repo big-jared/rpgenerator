@@ -65,6 +65,17 @@ kotlin {
 
             // Logging
             implementation(libs.kermit)
+
+            // Auth (cross-platform Google Sign-In + Firebase Auth persistence)
+            implementation(libs.kmpauth.google)
+            implementation(libs.kmpauth.uihelper)
+            implementation(libs.kmpauth.firebase)
+            implementation(libs.firebase.auth)
+            implementation(libs.firebase.common)
+
+            // Image loading (Coil 3 - Compose Multiplatform)
+            implementation(libs.coil.compose)
+            implementation(libs.coil.network.ktor)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

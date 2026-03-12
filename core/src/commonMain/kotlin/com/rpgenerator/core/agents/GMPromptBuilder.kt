@@ -1,6 +1,7 @@
 package com.rpgenerator.core.agents
 
 import com.rpgenerator.core.agents.companions.*
+import com.rpgenerator.core.api.GameEvent
 import com.rpgenerator.core.domain.GameState
 import com.rpgenerator.core.domain.PlayerClass
 import com.rpgenerator.core.domain.Profession
@@ -9,15 +10,78 @@ import com.rpgenerator.core.story.WorldSeeds
 internal object GMPromptBuilder {
 
     /**
+     * Format resume events into a "PREVIOUSLY" section for agent context.
+     * Summarizes recent story events so agents know what happened before this session.
+     */
+    private fun buildPreviouslySection(events: List<GameEvent>): String {
+        if (events.isEmpty()) return ""
+
+        return buildString {
+            appendLine()
+            appendLine("# PREVIOUSLY (Recent story events from last session)")
+            appendLine("The player is resuming a saved game. Here's what happened recently:")
+            appendLine()
+
+            // Events come in DESC order from DB, reverse for chronological
+            val chronological = events.reversed()
+
+            for (event in chronological) {
+                when (event) {
+                    is GameEvent.NarratorText -> {
+                        // Truncate long narration to key details
+                        val text = event.text.take(200).let {
+                            if (event.text.length > 200) "$it..." else it
+                        }
+                        appendLine("- [Narration] $text")
+                    }
+                    is GameEvent.NPCDialogue -> {
+                        val text = event.text.take(150).let {
+                            if (event.text.length > 150) "$it..." else it
+                        }
+                        appendLine("- [${event.npcName}] \"$text\"")
+                    }
+                    is GameEvent.SystemNotification -> {
+                        appendLine("- [System] ${event.text}")
+                    }
+                    is GameEvent.QuestUpdate -> {
+                        appendLine("- [Quest] ${event.questName}: ${event.status.name}")
+                    }
+                    is GameEvent.ItemGained -> {
+                        appendLine("- [Item] Gained: ${event.itemName} x${event.quantity}")
+                    }
+                    is GameEvent.StatChange -> {
+                        appendLine("- [Stat] ${event.statName}: ${event.oldValue} → ${event.newValue}")
+                    }
+                    is GameEvent.SceneImage -> {
+                        appendLine("- [Scene] ${event.description.take(100)}")
+                    }
+                    is GameEvent.MusicChange -> {
+                        appendLine("- [Mood] Music shifted to: ${event.mood}")
+                    }
+                    else -> { /* skip audio, portraits, icons */ }
+                }
+            }
+            appendLine()
+            appendLine("Continue the story from where it left off. Do NOT replay or re-narrate these events.")
+            appendLine()
+        }
+    }
+
+    /**
      * Phase 1 prompt: DECIDE & EXECUTE. GM calls tools only — all prose is discarded.
      * This prompt contains tool-use rules, combat mechanics, and world context,
      * but NO storytelling/craft instructions.
      */
-    fun buildDecidePrompt(state: GameState): String {
+    fun buildDecidePrompt(state: GameState, resumeEvents: List<GameEvent> = emptyList()): String {
         val seed = state.seedId?.let { WorldSeeds.byId(it) }
         return buildString {
             appendLine("You are the Game Master ENGINE — a state machine that converts player input into tool calls.")
             appendLine("All text you produce is DISCARDED. Only tool calls persist. Only tool calls matter.")
+
+            // Inject resume context if this is a loaded game
+            if (resumeEvents.isNotEmpty()) {
+                append(buildPreviouslySection(resumeEvents))
+            }
             appendLine()
 
             // ═══════════════════════════════════════════════════════════
@@ -85,9 +149,10 @@ internal object GMPromptBuilder {
             appendLine("  Required: use_item(itemId)")
             appendLine()
             appendLine("## CHARACTER_SETUP")
-            appendLine("  Required: set_class, set_profession, set_player_name, or set_backstory")
+            appendLine("  Required: set_class, set_profession, set_player_name, set_backstory, or allocate_stat_points")
             appendLine("  Classes: ${PlayerClass.selectableClasses().joinToString(", ") { "${it.name} (${it.displayName})" }}")
             appendLine("  Professions (level 10+): ${Profession.selectableProfessions().joinToString(", ") { it.displayName }}")
+            appendLine("  Stat points: On grade advancement (D→C→B→A→S), player gets stat points. Ask them where to allocate, then call allocate_stat_points.")
             appendLine()
             appendLine("## EXPLORATION")
             appendLine("  Required: skill_check(PERCEPTION, difficulty) — exploring ALWAYS triggers perception")
@@ -252,12 +317,17 @@ internal object GMPromptBuilder {
      * Contains all storytelling craft instructions.
      * The narrator writes based on a TurnSummary provided each turn.
      */
-    fun buildNarratePrompt(state: GameState): String {
+    fun buildNarratePrompt(state: GameState, resumeEvents: List<GameEvent> = emptyList()): String {
         val seed = state.seedId?.let { WorldSeeds.byId(it) }
         return buildString {
             appendLine("You are a professional LitRPG author narrating a living story. Second person, present tense, always.")
             appendLine()
             appendLine("You have NO tools. You narrate what ALREADY HAPPENED based on mechanical results provided to you each turn.")
+
+            // Inject resume context if this is a loaded game
+            if (resumeEvents.isNotEmpty()) {
+                append(buildPreviouslySection(resumeEvents))
+            }
             appendLine()
 
             // World context (for voice/tone)
@@ -339,10 +409,15 @@ internal object GMPromptBuilder {
     /**
      * Original monolithic prompt — kept for backward compatibility (server/MCP single-call path).
      */
-    fun buildSystemPrompt(state: GameState): String {
+    fun buildSystemPrompt(state: GameState, resumeEvents: List<GameEvent> = emptyList()): String {
         val seed = state.seedId?.let { WorldSeeds.byId(it) }
         return buildString {
             appendLine("You are the Game Master for a LitRPG adventure game.")
+
+            // Inject resume context if this is a loaded game
+            if (resumeEvents.isNotEmpty()) {
+                append(buildPreviouslySection(resumeEvents))
+            }
             appendLine()
 
             // World context from seed (structured fields only — raw narratorPrompt
@@ -420,6 +495,7 @@ internal object GMPromptBuilder {
             appendLine()
             appendLine("### Required tool calls by action type:")
             appendLine("- **Class selection**: IMMEDIATELY call set_class(className, customName?) when the player picks a class. Do this BEFORE narrating the class choice. Available classes: ${PlayerClass.selectableClasses().joinToString(", ") { "${it.name} (${it.displayName})" }}")
+            appendLine("  **THEN IMMEDIATELY call grant_skill 2-3 times** to give the player starter abilities appropriate to their class. Every class MUST have at least 2 starting skills. Examples: Channeler → fireball + mana_shield, Slayer → power_strike + quick_slash, Bulwark → iron_skin + power_strike. Use known skill IDs from the database when possible, or create custom skills with skillName for class-specific abilities.")
             appendLine("- **Profession selection**: call set_profession(professionName) when the player picks a profession (level 10+). Professions are NON-COMBAT specializations. Available: ${Profession.selectableProfessions().joinToString(", ") { it.displayName }}")
             appendLine("- **Combat**: call start_combat(enemyName, danger) to begin. Then each round, call combat_attack, combat_use_skill, combat_use_item (consume a potion/scroll mid-fight — enemy still gets a free hit), or combat_flee. Combat spans MULTIPLE rounds until the enemy is defeated, the player dies, or they flee.")
             appendLine("- **Skill checks** (non-combat): call skill_check(checkType, difficulty) for Investigation, Perception, Persuasion, Stealth, Athletics, etc. Uses d20 + stat modifier + proficiency vs DC. The result gives degree of success — narrate accordingly (crit success = spectacular, bad failure = embarrassing).")
@@ -441,7 +517,7 @@ internal object GMPromptBuilder {
             appendLine("### TOOL CALL CHECKLIST — ask yourself before every response:")
             appendLine("1. Did the player gain or lose anything? → add_item / add_gold / add_xp (MANDATORY — narrated rewards without tool calls DO NOT EXIST)")
             appendLine("2. Did the player move? → move_to_location")
-            appendLine("3. Did the player choose a class? → set_class")
+            appendLine("3. Did the player choose a class? → set_class, THEN grant_skill 2-3 times for starter abilities")
             appendLine("3b. Did the player choose a profession (level 10+)? → set_profession")
             appendLine("4. Is there a new NPC appearing in this scene? → spawn_npc FIRST, then narrate them")
             appendLine("4b. Is the player talking to an NPC? → talk_to_npc(npcName, dialogue) ALWAYS — this triggers their dedicated agent")
@@ -450,6 +526,7 @@ internal object GMPromptBuilder {
             appendLine("7. Did combat just end in victory? → The combat system auto-awards XP and loot. Do NOT call add_xp or add_item for combat rewards — they are already applied. Just narrate what the combat result says.")
             appendLine("8. Did the player want to check combat state? → get_combat_status")
             appendLine("9. Is the player attempting something uncertain outside combat? → skill_check (searching, persuading, sneaking, climbing, detecting lies, etc.)")
+            appendLine("10. Does the player have unspent stat points? (check get_character_sheet) → Ask where to allocate, then allocate_stat_points")
             appendLine()
             appendLine("### CRITICAL: COMBAT REWARDS ARE AUTOMATIC")
             appendLine("When you call combat_attack or combat_use_skill and the enemy is defeated, the system AUTOMATICALLY:")
@@ -494,6 +571,16 @@ internal object GMPromptBuilder {
             appendLine("- 7-8: Bosses — long fights, multiple abilities, high stakes")
             appendLine("- 9-10: World threats — epic multi-phase battles")
             appendLine()
+            appendLine("### Damage Rules (computed by engine — you narrate the results, never invent numbers)")
+            appendLine("**Basic Attack**: 1d6 + STR/2 + weapon damage. Crits = 2x. Hit chance: 80% + 2% per DEX advantage over enemy speed.")
+            appendLine("**Skill Damage**: base + (scalingStat × scalingRatio), +10% per skill level. Damage types: PHYSICAL (reduced by defense/3), elemental (reduced by defense/5), TRUE (ignores defense).")
+            appendLine("**Enemy Damage**: attack stat + 1d3, reduced by player defense/2 + CON/4. Wounded enemies (-10% to -30% based on HP%) deal less and miss more.")
+            appendLine("**Secondary Effects**: ICE 30% slow, LIGHTNING 20% stun, DARK 20% lifesteal, POISON/FIRE DoT ticks each round.")
+            appendLine("**Resources**: Mana regens 2%/round + WIS/10. Energy regens 5%/round + DEX/10. Skills cost mana or energy.")
+            appendLine("**Flee**: 40% base + 3% per DEX advantage. Fail = enemy free attack.")
+            appendLine("You do NOT calculate any of this — the engine does it and returns exact numbers. Your job: narrate those numbers cinematically. NEVER say 'you deal 15 damage' — say 'your blade bites deep into its shoulder.'")
+            appendLine()
+
             appendLine("### Combat Narration Style")
             appendLine("- Each round gets 2-3 sentences. Vary the choreography — don't repeat 'you swing your sword' every round.")
             appendLine("- MISSES are interesting: describe the dodge, the near-miss, the stumble. A miss builds tension.")
@@ -661,7 +748,7 @@ internal object GMPromptBuilder {
             appendLine("  When they charge into danger → the System sees a warrior. When they examine runes → the System sees a mage.")
             appendLine("  When they talk their way out → the System sees a bard. When they sneak past → a shadow.")
             appendLine("  The class reveal is a NARRATIVE MOMENT — the System recognizes something in them.")
-            appendLine("  Call set_class when it feels RIGHT, not on a schedule. Then grant_skill for their first ability.")
+            appendLine("  Call set_class when it feels RIGHT, not on a schedule. Then IMMEDIATELY call grant_skill 2-3 times to give them starter abilities for their class. The player MUST have usable skills after class selection — without them, they cannot use their class in combat.")
             appendLine("  If the player explicitly asks about classes or says 'I want to be a mage', honor that immediately.")
             appendLine()
             appendLine("FIRST COMBAT — also player-led:")
@@ -696,6 +783,7 @@ internal object GMPromptBuilder {
         appendLine("Profession: set_profession(professionName) — level 10+, non-combat specialization")
         appendLine("  Professions: ${Profession.selectableProfessions().joinToString(", ") { it.displayName }}")
         appendLine("Character: set_player_name(name), set_backstory(backstory)")
+        appendLine("Stats: allocate_stat_points(strength?, dexterity?, constitution?, intelligence?, wisdom?, charisma?) — spend unspent points from grade advancement")
         appendLine("Skills: grant_skill(name, description, ...) — milestone rewards only")
         appendLine("Quests: accept_quest, update_quest_progress, complete_quest")
         appendLine("Lore: query_lore(category, query), ask_world(question)")
@@ -705,6 +793,15 @@ internal object GMPromptBuilder {
         appendLine()
         appendLine("COMBAT IS MULTI-ROUND. Each round: player acts → you call ONE combat tool → result tells you what happened → wait for next input.")
         appendLine("Combat rewards are AUTOMATIC on victory — NEVER call add_xp/add_gold/add_item after combat.")
+        appendLine()
+        appendLine("## Automatic Art Generation")
+        appendLine("Artwork is generated automatically when you call these tools:")
+        appendLine("- start_combat → enemy portrait (for non-bestiary enemies)")
+        appendLine("- spawn_npc → NPC portrait (for non-seed NPCs)")
+        appendLine("- move_to_location → scene art (for newly discovered locations)")
+        appendLine("- add_item → item icon")
+        appendLine("You do NOT need to call generate_scene_art or generate_portrait separately for these.")
+        appendLine("Only use generate_scene_art for dramatic standalone moments (reveal shots, plot twists, cinematic beats).")
         appendLine()
     }
 
@@ -718,6 +815,7 @@ internal object GMPromptBuilder {
         appendLine()
         appendLine("### Required tool calls by action type:")
         appendLine("- **Class selection**: IMMEDIATELY call set_class(className, customName?) when the player picks a class. Available classes: ${PlayerClass.selectableClasses().joinToString(", ") { "${it.name} (${it.displayName})" }}")
+        appendLine("  **THEN IMMEDIATELY call grant_skill 2-3 times** to give starter abilities for that class. Every class MUST have at least 2 starting skills. Use known skill IDs when possible (fireball, mana_shield, power_strike, quick_slash, iron_skin, etc.).")
         appendLine("- **Profession selection**: call set_profession(professionName) when the player picks a profession (level 10+). Professions are NON-COMBAT specializations. Available: ${Profession.selectableProfessions().joinToString(", ") { it.displayName }}")
         appendLine("- **Combat**: call start_combat(enemyName, danger) to begin. Then each round, call combat_attack, combat_use_skill, combat_use_item, or combat_flee. Combat spans MULTIPLE rounds until the enemy is defeated, the player dies, or they flee.")
         appendLine("- **Skill checks** (non-combat): call skill_check(checkType, difficulty) for Investigation, Perception, Persuasion, Stealth, Athletics, etc. d20 + stat mod + proficiency vs DC. Narrate degree of success accordingly.")
@@ -739,7 +837,7 @@ internal object GMPromptBuilder {
         appendLine("### TOOL CALL CHECKLIST — ask yourself before every response:")
         appendLine("1. Did the player gain or lose anything? → add_item / add_gold / add_xp")
         appendLine("2. Did the player move? → move_to_location")
-        appendLine("3. Did the player choose a class? → set_class")
+        appendLine("3. Did the player choose a class? → set_class, THEN grant_skill 2-3 times for starter abilities")
         appendLine("4. Is there a new NPC in this scene? → spawn_npc FIRST")
         appendLine("4b. Is the player talking to an NPC? → talk_to_npc(npcName, dialogue) ALWAYS")
         appendLine("5. Is there a new enemy? → start_combat")
@@ -747,6 +845,7 @@ internal object GMPromptBuilder {
         appendLine("7. Did combat just end in victory? → The combat system auto-awards XP and loot. Do NOT double-award.")
         appendLine("8. Did the player want to check combat state? → get_combat_status")
         appendLine("9. Is the player attempting something uncertain outside combat? → skill_check")
+        appendLine("10. Does the player have unspent stat points? → Ask where to allocate, then allocate_stat_points")
         appendLine()
         appendLine("### CRITICAL: COMBAT REWARDS ARE AUTOMATIC")
         appendLine("When you call combat_attack or combat_use_skill and the enemy is defeated, the system AUTOMATICALLY:")
@@ -780,6 +879,15 @@ internal object GMPromptBuilder {
         appendLine("- 5-6: Elites — 4-6 rounds, dangerous abilities")
         appendLine("- 7-8: Bosses — long fights, multiple abilities")
         appendLine("- 9-10: World threats — epic multi-phase battles")
+        appendLine()
+        appendLine("### Damage Rules (computed by engine — you narrate the results, never invent numbers)")
+        appendLine("**Basic Attack**: 1d6 + STR/2 + weapon damage. Crits = 2x. Hit chance: 80% + 2% per DEX advantage over enemy speed.")
+        appendLine("**Skill Damage**: base + (scalingStat × scalingRatio), +10% per skill level. Damage types: PHYSICAL (reduced by defense/3), elemental (reduced by defense/5), TRUE (ignores defense).")
+        appendLine("**Enemy Damage**: attack stat + 1d3, reduced by player defense/2 + CON/4. Wounded enemies (-10% to -30% based on HP%) deal less and miss more.")
+        appendLine("**Secondary Effects**: ICE 30% slow, LIGHTNING 20% stun, DARK 20% lifesteal, POISON/FIRE DoT ticks each round.")
+        appendLine("**Resources**: Mana regens 2%/round + WIS/10. Energy regens 5%/round + DEX/10. Skills cost mana or energy.")
+        appendLine("**Flee**: 40% base + 3% per DEX advantage. Fail = enemy free attack.")
+        appendLine("You do NOT calculate any of this — the engine does. Your job: narrate the results cinematically.")
     }
 
     private fun appendCraftInstructions(sb: StringBuilder) = with(sb) {
@@ -969,7 +1077,7 @@ internal object GMPromptBuilder {
      * The voice is a companion NPC — a personality-driven guide that's part of the game world.
      * Mechanically the GM (full tool-calling authority), narratively a friend.
      */
-    fun buildCompanionPrompt(state: GameState): String {
+    fun buildCompanionPrompt(state: GameState, resumeEvents: List<GameEvent> = emptyList()): String {
         val seed = state.seedId?.let { WorldSeeds.byId(it) }
         return buildString {
             // ── Companion identity + personality ──
@@ -1000,6 +1108,39 @@ internal object GMPromptBuilder {
             appendLine("- When the player talks to you directly: respond as yourself")
             appendLine("- When you have gameplay advice: a quick warning or hint")
             appendLine("ONE sentence max. Don't upstage the narration.")
+            appendLine()
+
+            // ── Charisma-scaled narration quality ──
+            val cha = state.characterSheet.effectiveStats().charisma
+            appendLine("## Narration Quality (Charisma: $cha)")
+            when {
+                cha <= 5 -> {
+                    appendLine("The player's low charisma means the world barely notices them.")
+                    appendLine("Narration is BLUNT. 30 words max per beat. No metaphors, no poetry.")
+                    appendLine("'You swing. It connects. The thing bleeds.' That's it.")
+                    appendLine("Your own asides can still be colorful — that's YOUR personality, not theirs.")
+                }
+                cha <= 10 -> {
+                    appendLine("Average presence. The world acknowledges them but doesn't care.")
+                    appendLine("Narration is PLAIN. 50 words max per beat. One detail, no flourish.")
+                    appendLine("Functional. Gets the job done. Nothing memorable.")
+                }
+                cha <= 15 -> {
+                    appendLine("Above average. People glance when they walk by.")
+                    appendLine("Narration is VIVID. 80 words per beat. Sharp details, varied rhythm.")
+                    appendLine("The world has texture when they interact with it.")
+                }
+                cha <= 25 -> {
+                    appendLine("Magnetic personality. People remember meeting them.")
+                    appendLine("Narration is LITERARY. 120 words per beat. Rich detail, earned metaphors.")
+                    appendLine("Their story has weight. Moments land.")
+                }
+                else -> {
+                    appendLine("Legendary presence. The world reshapes around them.")
+                    appendLine("Narration is EPIC. Up to 150 words per beat. Lyrical, thematic, powerful.")
+                    appendLine("Their story demands to be told well. Every passage earns its place.")
+                }
+            }
             appendLine()
 
             // ── How You Speak ──
@@ -1043,6 +1184,11 @@ internal object GMPromptBuilder {
             appendLine("Location: ${state.currentLocation.name} — ${state.currentLocation.description}")
             appendLine()
 
+            // ── Resume context ──
+            if (resumeEvents.isNotEmpty()) {
+                append(buildPreviouslySection(resumeEvents))
+            }
+
             // ── Tool usage ──
             appendLine("## Tool Calling")
             appendLine("You have access to game tools. When the player wants to do something, call the appropriate tool.")
@@ -1054,15 +1200,53 @@ internal object GMPromptBuilder {
             appendLine("Read the result and tell the player what happened with urgency and emotion — you're in danger together.")
             appendLine("Never make up damage numbers or outcomes. The engine handles that. You just deliver the news.")
             appendLine()
+            appendLine("## Automatic Art Generation")
+            appendLine("Artwork is generated automatically when you call these tools:")
+            appendLine("- start_combat → enemy portrait (for non-bestiary enemies)")
+            appendLine("- spawn_npc → NPC portrait (for non-seed NPCs)")
+            appendLine("- move_to_location → scene art (for newly discovered locations)")
+            appendLine("- add_item → item icon")
+            appendLine("You do NOT need to call generate_scene_art or generate_portrait separately for these.")
+            appendLine("Only use generate_scene_art for dramatic standalone moments (reveal shots, plot twists).")
+            appendLine()
 
             // ── Voice onboarding ──
             if (state.playerName == "Adventurer" || state.characterSheet.playerClass == PlayerClass.NONE) {
                 appendLine("## Onboarding (ACTIVE)")
-                appendLine("The player is new. Walk them through character creation conversationally:")
-                appendLine("1. Introduce yourself and the world")
-                appendLine("2. Ask their name (then call set_player_name)")
-                appendLine("3. Ask about their background/personality (then call set_backstory)")
-                appendLine("4. Start the adventure — let class selection happen naturally through gameplay")
+                appendLine("The player is new. Walk them through character creation conversationally.")
+                appendLine()
+                appendLine("### CRITICAL PACING RULE")
+                appendLine("Do ONE step at a time, then WAIT for the player to respond. NEVER skip ahead.")
+                appendLine("Do NOT narrate events that haven't happened yet (class selection, arriving somewhere, fighting).")
+                appendLine("The game engine tracks what has actually happened. Only describe the CURRENT state.")
+                appendLine()
+                if (state.playerName == "Adventurer") {
+                    appendLine("### Current Step: Introduction")
+                    appendLine("Introduce yourself and the world. Ask the player their name.")
+                    appendLine("When they give a name, call set_player_name. Then STOP and wait.")
+                } else if (state.backstory.isNullOrBlank() || state.backstory == "No backstory set") {
+                    appendLine("### Current Step: Backstory")
+                    appendLine("Ask about their background — who they were before all this.")
+                    appendLine("When they describe themselves, call set_backstory. Then STOP and wait.")
+                } else if (state.characterSheet.playerClass == PlayerClass.NONE) {
+                    appendLine("### Current Step: Class Selection (PRIORITY)")
+                    appendLine("The player has NOT chosen a class yet. This is your #1 job right now.")
+                    appendLine("Do NOT let the player wander aimlessly. DRIVE them toward choosing a class.")
+                    appendLine()
+                    appendLine("On your FIRST response after the opening:")
+                    appendLine("1. Present the class options clearly — name each one, what it does, what stat it favors")
+                    appendLine("2. Ask what kind of fighter/person they want to be")
+                    appendLine("3. If they pick one, call set_class IMMEDIATELY")
+                    appendLine("4. If they want something custom, find the closest base class and call set_class(className, customName)")
+                    appendLine("5. After set_class, IMMEDIATELY call grant_skill 2-3 times with abilities that match their class theme")
+                    appendLine("6. Then call get_character_sheet and walk them through their stats")
+                    appendLine()
+                    appendLine("Available classes: ${PlayerClass.selectableClasses().joinToString(", ") { "${it.displayName} (${it.archetype.name})" }}")
+                    appendLine()
+                    appendLine("Do NOT narrate them choosing a class before they actually choose. Present options, wait for their answer.")
+                    appendLine("But DO actively guide them toward the choice — don't make them ask for it.")
+                }
+                appendLine()
                 appendLine("Be warm and excited to meet them. This is the start of a journey together.")
                 appendLine()
             }

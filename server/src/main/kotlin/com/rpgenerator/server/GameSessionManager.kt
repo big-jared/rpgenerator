@@ -143,6 +143,15 @@ class GameSession(
     var connected = false
         private set
 
+    /** Cached item icon images: itemId → (imageBytes, mimeType) */
+    val itemIcons = ConcurrentHashMap<String, Pair<ByteArray, String>>()
+
+    /** Gate realtime input while a Gemini tool call is pending (prevents 1008). */
+    @Volatile var toolCallPending = false
+
+    /** Drop outgoing audio after interruption until next model turn. */
+    @Volatile var audioMuted = false
+
     /**
      * Connect to Gemini Live API for voice narration.
      */

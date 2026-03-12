@@ -73,13 +73,17 @@ internal class RPGClientImpl(
         val state = repository.loadGameState(gameInfo.id)
             ?: throw IllegalStateException("Game state not found for ${gameInfo.id}")
 
-        // Create game instance
+        // Load recent events for agent context on resume
+        val recentEvents = repository.getRecentEvents(gameInfo.id, limit = 30)
+
+        // Create game instance with event history
         val game = GameImpl(
             gameId = gameInfo.id,
             llm = llm,
             repository = repository,
             plotRepository = plotRepository,
-            initialState = state
+            initialState = state,
+            resumeEvents = recentEvents
         )
 
         // Set the playtime from saved data

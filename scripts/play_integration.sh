@@ -2,9 +2,11 @@
 # Play RPGenerator as Hank — grumpy Brooklyn fairy companion
 # Seed: Integration (System Apocalypse)
 #
-# Usage: ./scripts/play_integration.sh [claude|codex]
+# Usage: ./scripts/play_integration.sh [claude|codex] [voice]
 # Prerequisites: dev server running (./scripts/dev-server.sh)
 set -e
+TTS_VOICE="fable"  # OpenAI voice — Brooklyn energy
+TTS_INSTRUCTIONS="Fast-paced Brooklyn accent. Talk quick, like you got places to be. Sarcastic, world-weary, dry humor. Speak low and rumbly but FAST — no dragging, no long pauses. When something's serious, slow down just a beat, then speed right back up."
 source "$(cd "$(dirname "$0")" && pwd)/_play_common.sh"
 
 PERSONALITY=$(extract_personality "HankCompanion.kt")
@@ -28,7 +30,7 @@ Event presentation:
 - npc_dialogue: Deliver the NPC's lines, then react as Hank
 - quest_update: Announce it with editorial commentary
 - scene_image: Describe what Hank sees
-- music_change: React to the mood shift
+- music_change: Silently run the matching `voicemode dj` command (see Background Music section), do NOT narrate the music change
 
 Onboarding: The player is new. Introduce yourself, get their name and backstory, then start the adventure. Be gruff but secretly excited.
 EOF

@@ -7,6 +7,7 @@ import android.media.AudioTrack
 /**
  * Android AudioTrack implementation.
  * Plays PCM 24kHz 16-bit mono audio streamed from Gemini Live API.
+ * Thread-safe — enqueue may be called from multiple Gemini callback threads.
  */
 actual class AudioPlayer actual constructor() {
 
@@ -14,11 +15,13 @@ actual class AudioPlayer actual constructor() {
     private val channelConfig = AudioFormat.CHANNEL_OUT_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
 
+    private val lock = Object()
     private var audioTrack: AudioTrack? = null
     var isPlaying: Boolean = false
         private set
 
     private fun ensureTrack(): AudioTrack {
+        // Already checked under lock by callers
         audioTrack?.let { return it }
 
         val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat)
@@ -36,7 +39,7 @@ actual class AudioPlayer actual constructor() {
                     .setEncoding(audioFormat)
                     .build()
             )
-            .setBufferSizeInBytes(bufferSize * 2)
+            .setBufferSizeInBytes(bufferSize * 4)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
@@ -47,22 +50,28 @@ actual class AudioPlayer actual constructor() {
     }
 
     actual fun enqueue(pcmData: ByteArray) {
-        val track = ensureTrack()
-        track.write(pcmData, 0, pcmData.size)
+        synchronized(lock) {
+            val track = ensureTrack()
+            track.write(pcmData, 0, pcmData.size)
+        }
     }
 
     actual fun clear() {
-        audioTrack?.let { track ->
-            track.pause()
-            track.flush()
-            track.play()
+        synchronized(lock) {
+            audioTrack?.let { track ->
+                track.pause()
+                track.flush()
+                track.play()
+            }
         }
     }
 
     actual fun release() {
-        isPlaying = false
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
+        synchronized(lock) {
+            isPlaying = false
+            audioTrack?.stop()
+            audioTrack?.release()
+            audioTrack = null
+        }
     }
 }

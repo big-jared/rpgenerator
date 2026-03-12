@@ -8,7 +8,15 @@ import com.rpgenerator.core.persistence.GameRepository
 import com.rpgenerator.core.persistence.PlotGraphRepository
 import com.rpgenerator.core.story.StoryFoundation
 import com.rpgenerator.core.agents.GMPromptBuilder
+import com.rpgenerator.core.agents.ClassGeneratorAgent
+import com.rpgenerator.core.agents.ItemGeneratorAgent
+import com.rpgenerator.core.agents.LocationGeneratorAgent
+import com.rpgenerator.core.agents.MonsterGeneratorAgent
+import com.rpgenerator.core.agents.SkillGeneratorAgent
+import com.rpgenerator.core.generation.NPCArchetypeGenerator
 import com.rpgenerator.core.tools.LoreQueryHandler
+import com.rpgenerator.core.tools.ToolCaller
+import com.rpgenerator.core.tools.ToolCallLogEntry
 import com.rpgenerator.core.tools.UnifiedToolContractImpl
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
@@ -23,11 +31,26 @@ internal class GameImpl(
     private val llm: LLMInterface,
     private val repository: GameRepository,
     private val plotRepository: PlotGraphRepository,
-    initialState: GameState
+    initialState: GameState,
+    private val resumeEvents: List<GameEvent> = emptyList()
 ) : Game(gameId, llm) {
 
-    private val toolContract = UnifiedToolContractImpl()
-    private val orchestrator = GameOrchestrator(llm, initialState, toolContract)
+    private val monsterGenerator by lazy { MonsterGeneratorAgent(llm) }
+    private val npcGenerator by lazy { NPCArchetypeGenerator(llm) }
+    private val locationGenerator by lazy { LocationGeneratorAgent(llm) }
+    private val itemGenerator by lazy { ItemGeneratorAgent(llm) }
+    private val classGenerator by lazy { ClassGeneratorAgent(llm) }
+    private val skillGenerator by lazy { SkillGeneratorAgent(llm) }
+
+    private val toolContract = UnifiedToolContractImpl(
+        monsterGenerator = monsterGenerator,
+        npcGenerator = npcGenerator,
+        locationGenerator = locationGenerator,
+        itemGenerator = itemGenerator,
+        classGenerator = classGenerator,
+        skillGenerator = skillGenerator
+    )
+    private val orchestrator = GameOrchestrator(llm, initialState, toolContract, resumeEvents)
     private var sessionStartTime = currentTimeMillis()
     private var sessionPlaytime = 0L
     private var plotGraphSaved = false
@@ -116,6 +139,22 @@ internal class GameImpl(
                     isActive = skill.isActive
                 )
             },
+            combat = state.combatState?.let { combat ->
+                CombatInfo(
+                    enemyName = combat.enemy.name,
+                    enemyHP = combat.enemy.currentHP,
+                    enemyMaxHP = combat.enemy.maxHP,
+                    enemyCondition = combat.enemy.condition,
+                    portraitResource = combat.enemy.portraitResource,
+                    roundNumber = combat.roundNumber,
+                    enemyDanger = combat.enemy.danger,
+                    lootTier = combat.enemy.lootTier,
+                    description = combat.enemy.description,
+                    immunities = combat.enemy.immunities.map { it.name },
+                    vulnerabilities = combat.enemy.vulnerabilities.map { it.name },
+                    resistances = combat.enemy.resistances.map { it.name }
+                )
+            },
             recentEvents = recentEvents
         )
     }
@@ -165,6 +204,27 @@ internal class GameImpl(
         return orchestrator.getEventLog()
     }
 
+    override fun getToolCallLog(): List<Map<String, Any?>> {
+        return toolContract.toolCallLog.map { entry ->
+            mapOf(
+                "seq" to entry.sequenceNumber,
+                "timestamp" to entry.timestamp,
+                "tool" to entry.toolName,
+                "caller" to entry.caller.name,
+                "args" to entry.args,
+                "success" to entry.success,
+                "result" to entry.resultSummary,
+                "error" to entry.error,
+                "elapsedMs" to entry.elapsedMs,
+                "stateChanged" to entry.stateChanged,
+                "events" to entry.eventsEmitted,
+                "location" to entry.location,
+                "playerLevel" to entry.playerLevel,
+                "turn" to entry.turnNumber
+            )
+        }
+    }
+
     override fun getDebugState(): Map<String, String> {
         val state = orchestrator.getState()
         val foundation = orchestrator.getStoryFoundation()
@@ -208,6 +268,7 @@ internal class GameImpl(
     // ── Tool execution API ─────────────────────────────────────────
 
     override suspend fun executeTool(name: String, args: Map<String, Any?>): ToolCallResult {
+        toolContract.currentCaller = ToolCaller.EXTERNAL_MCP
         val state = orchestrator.getState()
         val outcome = toolContract.executeTool(name, args, state)
 
@@ -242,7 +303,7 @@ internal class GameImpl(
     }
 
     override fun getSystemPrompt(): String {
-        return GMPromptBuilder.buildCompanionPrompt(orchestrator.getState())
+        return GMPromptBuilder.buildCompanionPrompt(orchestrator.getState(), resumeEvents)
     }
 
     override fun getCompanionVoice(): String {
@@ -253,5 +314,43 @@ internal class GameImpl(
             "quiet_life" -> "Kore"     // Warm, gentle — fits Bramble the forest spirit
             else -> "Kore"
         }
+    }
+
+    override fun getNpcDetails(npcId: String): NPCDetails? {
+        val state = orchestrator.getState()
+        val npc = state.findNPC(npcId) ?: return null
+        val relationship = npc.getRelationship(id)
+
+        return NPCDetails(
+            id = npc.id,
+            name = npc.name,
+            archetype = npc.archetype.name.replace("_", " "),
+            description = npc.lore.ifEmpty { npc.personality.motivations.joinToString(". ") },
+            lore = npc.lore,
+            traits = npc.personality.traits,
+            speechPattern = npc.personality.speechPattern,
+            motivations = npc.personality.motivations,
+            relationshipStatus = relationship.getStatus().name.replace("_", " "),
+            affinity = relationship.affinity,
+            hasShop = npc.shop != null,
+            shopName = npc.shop?.name,
+            shopItems = npc.shop?.inventory?.map { item ->
+                ShopItemInfo(
+                    id = item.id,
+                    name = item.name,
+                    description = item.description,
+                    price = item.price,
+                    stock = item.stock,
+                    requiredLevel = item.requiredLevel
+                )
+            } ?: emptyList(),
+            questIds = npc.questIds,
+            recentConversations = npc.getRecentConversations(5).map { entry ->
+                ConversationInfo(
+                    playerInput = entry.playerInput,
+                    npcResponse = entry.npcResponse
+                )
+            }
+        )
     }
 }

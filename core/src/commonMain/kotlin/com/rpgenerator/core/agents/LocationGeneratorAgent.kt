@@ -16,7 +16,8 @@ internal data class LocationGenerationResponse(
     val description: String,
     val danger: Int,
     val features: List<String>,
-    val lore: String
+    val lore: String,
+    val visualPrompt: String = ""
 )
 
 internal class LocationGeneratorAgent(private val llm: LLMInterface) {
@@ -40,7 +41,8 @@ internal class LocationGeneratorAgent(private val llm: LLMInterface) {
             "description": "Vivid 1-2 sentence description of what the player sees",
             "danger": 1-20,
             "features": ["feature1", "feature2", "feature3"],
-            "lore": "1-2 sentences of backstory or atmosphere"
+            "lore": "1-2 sentences of backstory or atmosphere",
+            "visualPrompt": "SEE VISUAL PROMPT RULES BELOW"
         }
 
         IMPORTANT:
@@ -49,14 +51,26 @@ internal class LocationGeneratorAgent(private val llm: LLMInterface) {
         - Description should be evocative and set the mood
         - Lore should hint at story hooks or world-building
         - Name should be memorable and descriptive
+
+        VISUAL PROMPT RULES:
+        The visualPrompt generates a wide scene image (16:9). It must be:
+        - A cinematic establishing shot of the location
+        - Highly specific about terrain, architecture, lighting, weather, atmosphere
+        - Include key visual landmarks and mood
+        - Format: "Wide establishing shot, 16:9 cinematic. [Terrain type and geography]. [Architecture or natural formations]. [Lighting and weather conditions]. [Atmosphere and mood]. [Key visual landmarks]. Style: digital painting, fantasy concept art, dramatic lighting. No text, no words, no UI."
         """.trimIndent()
     )
+
+    /**
+     * Result of location generation — Location plus optional visualPrompt for scene art.
+     */
+    data class LocationWithVisual(val location: Location, val visualPrompt: String)
 
     suspend fun generateLocation(
         parentLocation: Location,
         discoveryContext: String,
         state: GameState
-    ): Location? {
+    ): LocationWithVisual? {
         val prompt = """
             Parent Location: ${parentLocation.name}
             Parent Biome: ${parentLocation.biome}
@@ -79,15 +93,22 @@ internal class LocationGeneratorAgent(private val llm: LLMInterface) {
         """.trimIndent()
 
         val responseText = agentStream.sendMessage(prompt).toList().joinToString("")
+        println("[LocationGenerator] Raw response (${responseText.length} chars): ${responseText.take(500)}")
 
-        return parseResponse(responseText, parentLocation, state)
+        val parsed = parseResponse(responseText, parentLocation, state)
+        if (parsed == null) {
+            println("[LocationGenerator] PARSE FAILED. Full response:\n$responseText")
+        } else {
+            println("[LocationGenerator] Parsed location: name=${parsed.location.name}, biome=${parsed.location.biome}, danger=${parsed.location.danger}")
+        }
+        return parsed
     }
 
     private fun parseResponse(
         text: String,
         parentLocation: Location,
         state: GameState
-    ): Location? {
+    ): LocationWithVisual? {
         return try {
             // Extract JSON from potential markdown code blocks
             val jsonText = text.trim()
@@ -112,7 +133,7 @@ internal class LocationGeneratorAgent(private val llm: LLMInterface) {
             // Generate unique ID
             val locationId = "custom_${currentTimeMillis()}_${response.name.lowercase().replace(" ", "_")}"
 
-            Location(
+            val location = Location(
                 id = locationId,
                 name = response.name,
                 zoneId = parentLocation.zoneId,
@@ -123,6 +144,7 @@ internal class LocationGeneratorAgent(private val llm: LLMInterface) {
                 features = response.features,
                 lore = response.lore
             )
+            LocationWithVisual(location, response.visualPrompt)
         } catch (e: Exception) {
             // Log error in production, return null for now
             null

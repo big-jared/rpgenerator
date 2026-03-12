@@ -89,14 +89,17 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
         """.trimIndent()
 
         val response = agentStream.sendMessage(prompt).toList().joinToString("")
+        println("[NPCGenerator] Raw response (${response.length} chars): ${response.take(500)}")
 
-        return parseNPCFromResponse(
+        val npc = parseNPCFromResponse(
             response,
             name,
             NPCArchetype.TRAINER,
             locationId,
             seed
         )
+        println("[NPCGenerator] Parsed tutorial guide: name=${npc.name}, archetype=${npc.archetype}, traits=${npc.personality.traits}")
+        return npc
     }
 
     /**
@@ -130,14 +133,17 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
         """.trimIndent()
 
         val response = agentStream.sendMessage(prompt).toList().joinToString("")
+        println("[NPCGenerator] Raw response (${response.length} chars): ${response.take(500)}")
 
-        return parseNPCFromResponse(
+        val npc = parseNPCFromResponse(
             response,
             name,
             NPCArchetype.MERCHANT,
             locationId,
             seed
         )
+        println("[NPCGenerator] Parsed merchant: name=${npc.name}, archetype=${npc.archetype}, traits=${npc.personality.traits}")
+        return npc
     }
 
     /**
@@ -171,14 +177,17 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
         """.trimIndent()
 
         val response = agentStream.sendMessage(prompt).toList().joinToString("")
+        println("[NPCGenerator] Raw response (${response.length} chars): ${response.take(500)}")
 
-        return parseNPCFromResponse(
+        val npc = parseNPCFromResponse(
             response,
             name,
             NPCArchetype.QUEST_GIVER,
             locationId,
             seed
         )
+        println("[NPCGenerator] Parsed quest giver: name=${npc.name}, archetype=${npc.archetype}, traits=${npc.personality.traits}")
+        return npc
     }
 
     /**
@@ -221,14 +230,17 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
         """.trimIndent()
 
         val response = agentStream.sendMessage(prompt).toList().joinToString("")
+        println("[NPCGenerator] Raw response (${response.length} chars): ${response.take(500)}")
 
-        return parseNPCFromResponse(
+        val npc = parseNPCFromResponse(
             response,
             name,
             NPCArchetype.WANDERER, // Rivals are often wanderers
             locationId,
             seed
         )
+        println("[NPCGenerator] Parsed rival: name=${npc.name}, archetype=${npc.archetype}, traits=${npc.personality.traits}")
+        return npc
     }
 
     /**
@@ -239,7 +251,7 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
         locationId: String,
         context: String,
         seed: Long = currentTimeMillis()
-    ): NPC {
+    ): NPCWithVisual {
         val culture = NameCulture.values().random()
         val name = NameGenerator.generateName(role, culture, NameGender.ANY, seed)
 
@@ -255,12 +267,34 @@ internal class NPCArchetypeGenerator(private val llm: LLMInterface) {
             Make them unique and memorable.
             Avoid stereotypes and clichés.
 
-            Generate personality, motivations, backstory, greeting (JSON format).
+            Generate personality, motivations, backstory, greeting, visualDescription, and visualPrompt (JSON format).
+
+            visualDescription: Physical appearance — height, build, clothing, scars, hair, distinguishing features. 2-3 sentences.
+            visualPrompt: "Circular fantasy RPG character portrait, painterly style. [Race/species]. [Apparent age]. [Clothing and equipment]. [Expression and pose]. [Distinguishing features]. Background: [zone-appropriate]. Oil painting style, detailed brushwork, fantasy RPG UI aesthetic."
         """.trimIndent()
 
         val response = agentStream.sendMessage(prompt).toList().joinToString("")
+        println("[NPCGenerator] Raw response (${response.length} chars): ${response.take(500)}")
 
-        return parseNPCFromResponse(response, name, archetype, locationId, seed)
+        val npc = parseNPCFromResponse(response, name, archetype, locationId, seed)
+        println("[NPCGenerator] Parsed NPC for role '$role': name=${npc.name}, archetype=${npc.archetype}, traits=${npc.personality.traits}")
+        val visualPrompt = extractField(response, "visualPrompt") ?: ""
+        val visualDescription = extractField(response, "visualDescription") ?: ""
+        return NPCWithVisual(npc, visualDescription, visualPrompt)
+    }
+
+    /**
+     * NPC generation result with optional visual data for portrait generation.
+     */
+    data class NPCWithVisual(
+        val npc: NPC,
+        val visualDescription: String,
+        val visualPrompt: String
+    )
+
+    private fun extractField(response: String, key: String): String? {
+        val pattern = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+        return pattern.find(response)?.groupValues?.get(1)?.replace("\\\"", "\"")?.replace("\\n", "\n")
     }
 
     // ========================

@@ -23,7 +23,7 @@ class ServiceGameConnection(
             ?: kotlinx.coroutines.flow.MutableSharedFlow()
 
     override fun startReceptionistSession(prompt: String) {
-        service.connection?.startReceptionistSession(prompt)
+        service.startReceptionistSession(prompt)
     }
 
     override fun disconnectSession() {
@@ -63,6 +63,6 @@ class ServiceGameConnection(
     }
 
     override fun close() {
-        // Don't close — service owns the lifecycle, it stops when the activity unbinds
+        service.teardown()
     }
 }

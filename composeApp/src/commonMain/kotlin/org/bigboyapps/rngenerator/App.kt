@@ -15,9 +15,12 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import kotlinx.serialization.Serializable
+import com.mmk.kmpauth.google.GoogleAuthCredentials
+import com.mmk.kmpauth.google.GoogleAuthProvider
 import org.bigboyapps.rngenerator.ui.*
 
 private const val TRANSITION_DURATION = 300
+private const val GOOGLE_WEB_CLIENT_ID = "931553644155-ot19ogbgohlvh4r4pgbn6h8nnl6bm9sk.apps.googleusercontent.com"
 
 private val AdventureColorScheme = lightColorScheme(
     primary = AppColors.primary,
@@ -37,11 +40,18 @@ private val AdventureColorScheme = lightColorScheme(
 // Type-safe route definitions
 sealed interface Route {
     @Serializable data object SignIn : Route
+    @Serializable data object Lobby : Route
+    @Serializable data object Onboarding : Route
     @Serializable data object Game : Route
 }
 
 @Composable
 fun App(connectionFactory: (() -> GameConnection)? = null) {
+    // Initialize KMPAuth Google Sign-In (must complete before SignInScreen renders)
+    remember {
+        GoogleAuthProvider.create(GoogleAuthCredentials(serverId = GOOGLE_WEB_CLIENT_ID))
+    }
+
     MaterialTheme(
         colorScheme = AdventureColorScheme,
         typography = appTypography()
@@ -51,9 +61,13 @@ fun App(connectionFactory: (() -> GameConnection)? = null) {
             color = MaterialTheme.colorScheme.background
         ) {
             val navController = rememberNavController()
-            val viewModel = remember {
-                if (connectionFactory != null) GameViewModel(connectionFactory)
-                else GameViewModel()
+            val viewModel = remember { GameViewModel() }
+
+            // When the connection factory becomes available (service bound), update the ViewModel
+            LaunchedEffect(connectionFactory) {
+                if (connectionFactory != null) {
+                    viewModel.updateConnectionFactory(connectionFactory)
+                }
             }
 
             // Listen for screen changes from ViewModel and navigate
@@ -61,13 +75,20 @@ fun App(connectionFactory: (() -> GameConnection)? = null) {
             LaunchedEffect(uiState.screen) {
                 val targetRoute: Route = when (uiState.screen) {
                     Screen.SIGN_IN -> Route.SignIn
+                    Screen.LOBBY -> Route.Lobby
+                    Screen.ONBOARDING -> Route.Onboarding
                     Screen.GAME -> Route.Game
                 }
                 val currentRoute = navController.currentDestination?.route
                 val targetRouteClass = targetRoute::class.qualifiedName
                 if (currentRoute != targetRouteClass) {
-                    navController.navigate(targetRoute) {
-                        popUpTo(0) { inclusive = true }
+                    when (uiState.screen) {
+                        // These reset the stack (no back gesture desired)
+                        Screen.SIGN_IN, Screen.LOBBY -> navController.navigate(targetRoute) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                        // These push onto the stack (back gesture pops to previous)
+                        Screen.ONBOARDING, Screen.GAME -> navController.navigate(targetRoute)
                     }
                 }
             }
@@ -82,6 +103,16 @@ fun App(connectionFactory: (() -> GameConnection)? = null) {
             ) {
                 composable<Route.SignIn> {
                     SignInScreen(viewModel)
+                }
+                composable<Route.Lobby> {
+                    LobbyScreen(viewModel)
+                }
+                composable<Route.Onboarding> {
+                    // Sync ViewModel when user swipes back
+                    DisposableEffect(Unit) {
+                        onDispose { viewModel.stopOnboarding() }
+                    }
+                    OnboardingScreen(viewModel)
                 }
                 composable<Route.Game> {
                     GameScreen(viewModel)

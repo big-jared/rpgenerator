@@ -1,8 +1,26 @@
 package com.rpgenerator.core.api
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+
+/**
+ * A chunk of agent output — either text or an inline image.
+ * Used for Gemini's interleaved text+image generation.
+ */
+sealed class AgentChunk {
+    data class Text(val content: String) : AgentChunk()
+    data class Image(val data: ByteArray, val mimeType: String = "image/png") : AgentChunk()
+}
+
+/**
+ * Extension to filter an AgentChunk flow to text-only strings.
+ * Use this when you only care about text content (most callers).
+ */
+fun Flow<AgentChunk>.textOnly(): Flow<String> =
+    filter { it is AgentChunk.Text }.map { (it as AgentChunk.Text).content }
 
 /**
  * Definition of a tool that can be called by the LLM.
@@ -77,4 +95,21 @@ interface AgentStream {
         tools: List<LLMToolDef>,
         executor: ToolExecutor
     ): Flow<String> = sendMessage(message)
+
+    /**
+     * Send a message and receive multimodal response (text + images).
+     * Used for Gemini's native interleaved text+image generation.
+     * Default wraps sendMessage() as text-only chunks.
+     *
+     * @param message User or game message to send
+     * @param generateImage Whether to request image generation in the response
+     * @return Flow of AgentChunk (Text and/or Image)
+     */
+    suspend fun sendMessageMultimodal(
+        message: String,
+        generateImage: Boolean = false
+    ): Flow<AgentChunk> {
+        val textFlow = sendMessage(message)
+        return textFlow.map { AgentChunk.Text(it) as AgentChunk }
+    }
 }

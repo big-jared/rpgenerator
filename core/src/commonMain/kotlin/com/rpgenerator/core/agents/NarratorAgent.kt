@@ -43,6 +43,8 @@ internal class NarratorAgent(private val llm: LLMInterface, customPrompt: String
         - Repeat what the player already knows
         - End with option lists or 'What do you do?'
         - End with artificial cliffhangers or forced urgency when the player is just exploring
+        - Fabricate System notifications or [BRACKETED MESSAGES] that contradict the game engine. If the engine says something succeeded, narrate it as successful. You describe the EXPERIENCE of game events — you do not invent fake ones.
+        - INVENT NPCs. You may ONLY reference NPCs listed in "NPCs present" in the world state. If no NPCs are listed, the area is empty — do NOT describe unnamed strangers, shopkeepers, guards, or anyone the player could try to interact with. Crowd scenes are fine ("people mill about") but never give an unnamed character dialogue, a name, or distinguishing features that invite interaction.
         """.trimIndent()
     )
 
@@ -110,6 +112,7 @@ internal class NarratorAgent(private val llm: LLMInterface, customPrompt: String
             - The System's first message feels alien and invasive — it knows things it shouldn't.
             - One sensory detail per beat. No stacking.
             - End on forward momentum, not a summary.
+            - Do NOT narrate the player choosing a class, selecting abilities, or making any decisions. The player hasn't chosen yet. End BEFORE any choice is made — leave them standing in the new world, disoriented, with everything ahead of them.
         """.trimIndent()
 
         return agentStream.sendMessage(prompt).toList().joinToString("")

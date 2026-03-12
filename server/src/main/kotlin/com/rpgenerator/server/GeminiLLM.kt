@@ -10,11 +10,13 @@ import com.google.genai.types.Part
 import com.google.genai.types.Schema
 import com.google.genai.types.Tool
 import com.google.genai.types.ToolConfig
+import com.rpgenerator.core.api.AgentChunk
 import com.rpgenerator.core.api.AgentStream
 import com.rpgenerator.core.api.LLMInterface
 import com.rpgenerator.core.api.LLMToolCall
 import com.rpgenerator.core.api.LLMToolDef
 import com.rpgenerator.core.api.ToolExecutor
+import com.google.genai.types.Modality
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -98,7 +100,7 @@ class GeminiLLM(
                     .systemInstruction(systemInstr)
                     .tools(geminiTools)
                     .toolConfig(currentToolConfig)
-                    .maxOutputTokens(4096)
+                    .maxOutputTokens(10000)
                     .build()
 
                 val response = try {
@@ -111,7 +113,7 @@ class GeminiLLM(
                         // Gemini generated a bad function call — retry without tools
                         val fallbackConfig = GenerateContentConfig.builder()
                             .systemInstruction(systemInstr)
-                            .maxOutputTokens(4096)
+                            .maxOutputTokens(10000)
                             .build()
                         withContext(Dispatchers.IO) {
                             client.models.generateContent(model, contents.toList(), fallbackConfig)
@@ -184,14 +186,14 @@ class GeminiLLM(
                 val retryConfig = if (toolsExecuted) {
                     GenerateContentConfig.builder()
                         .systemInstruction(systemInstr)
-                        .maxOutputTokens(4096)
+                        .maxOutputTokens(10000)
                         .build()
                 } else {
                     GenerateContentConfig.builder()
                         .systemInstruction(systemInstr)
                         .tools(geminiTools)
                         .toolConfig(forceToolConfig)
-                        .maxOutputTokens(4096)
+                        .maxOutputTokens(10000)
                         .build()
                 }
 
@@ -231,7 +233,7 @@ class GeminiLLM(
                             .systemInstruction(systemInstr)
                             .tools(geminiTools)
                             .toolConfig(autoToolConfig)
-                            .maxOutputTokens(4096)
+                            .maxOutputTokens(10000)
                             .build()
                         val finalResponse = withContext(Dispatchers.IO) {
                             client.models.generateContent(model, contents.toList(), afterToolsConfig)
@@ -273,7 +275,7 @@ class GeminiLLM(
                         .parts(listOf(Part.builder().text(systemPrompt).build()))
                         .build()
                 )
-                .maxOutputTokens(2048)
+                .maxOutputTokens(10000)
                 .build()
 
             val response = withContext(Dispatchers.IO) {
@@ -291,6 +293,73 @@ class GeminiLLM(
             )
 
             emitWords(responseText)
+        }
+
+        override suspend fun sendMessageMultimodal(
+            message: String,
+            generateImage: Boolean
+        ): Flow<AgentChunk> = flow {
+            val userContent = Content.builder()
+                .role("user")
+                .parts(listOf(Part.builder().text(message).build()))
+                .build()
+
+            val allContents = buildList {
+                addAll(conversationHistory)
+                add(userContent)
+            }
+
+            val configBuilder = GenerateContentConfig.builder()
+                .systemInstruction(
+                    Content.builder()
+                        .parts(listOf(Part.builder().text(systemPrompt).build()))
+                        .build()
+                )
+                .maxOutputTokens(10000)
+
+            if (generateImage) {
+                configBuilder.responseModalities("TEXT", "IMAGE")
+            }
+
+            val config = configBuilder.build()
+
+            // Use Gemini native image generation model
+            val imageModel = if (generateImage) "gemini-2.5-flash-image" else model
+
+            val response = withContext(Dispatchers.IO) {
+                client.models.generateContent(imageModel, allContents, config)
+            }
+
+            // Extract text and image parts from response
+            val parts = response.candidates().orElse(emptyList()).firstOrNull()
+                ?.content()?.orElse(null)?.parts()?.orElse(emptyList()) ?: emptyList()
+
+            val textParts = mutableListOf<String>()
+            for (part in parts) {
+                val text = part.text().orElse(null)
+                if (text != null) {
+                    textParts.add(text)
+                    emit(AgentChunk.Text(text))
+                }
+                val inlineData = part.inlineData().orElse(null)
+                if (inlineData != null) {
+                    val imageBytes = inlineData.data().orElse(null)
+                    val mimeType = inlineData.mimeType().orElse("image/png")
+                    if (imageBytes != null) {
+                        emit(AgentChunk.Image(data = imageBytes, mimeType = mimeType))
+                    }
+                }
+            }
+
+            val fullText = textParts.joinToString("")
+            conversationHistory.add(userContent)
+            if (fullText.isNotBlank()) {
+                conversationHistory.add(
+                    Content.builder().role("model")
+                        .parts(listOf(Part.builder().text(fullText).build()))
+                        .build()
+                )
+            }
         }
 
         private suspend fun kotlinx.coroutines.flow.FlowCollector<String>.emitWords(text: String) {

@@ -34,6 +34,11 @@ sqldelight = "2.0.2"
 # Auth
 googleid = "1.1.1"
 google-services = "4.4.2"
+kmpauth = "2.3.1"
+firebase-gitlive = "2.1.0"
+
+# Image Loading
+coil = "3.1.0"
 
 # Logging
 kermit = "2.0.4"
@@ -81,6 +86,11 @@ ktor-client-logging = { module = "io.ktor:ktor-client-logging", version.ref = "k
 androidx-credentials = { module = "androidx.credentials:credentials", version.ref = "androidx-credentials" }
 androidx-credentials-play = { module = "androidx.credentials:credentials-play-services-auth", version.ref = "androidx-credentials" }
 google-id = { module = "com.google.android.libraries.identity.googleid:googleid", version.ref = "googleid" }
+kmpauth-google = { module = "io.github.mirzemehdi:kmpauth-google", version.ref = "kmpauth" }
+kmpauth-uihelper = { module = "io.github.mirzemehdi:kmpauth-uihelper", version.ref = "kmpauth" }
+kmpauth-firebase = { module = "io.github.mirzemehdi:kmpauth-firebase", version.ref = "kmpauth" }
+firebase-auth = { module = "dev.gitlive:firebase-auth", version.ref = "firebase-gitlive" }
+firebase-common = { module = "dev.gitlive:firebase-common", version.ref = "firebase-gitlive" }
 
 # SQLDelight
 sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version.ref = "sqldelight" }
@@ -88,6 +98,10 @@ sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", 
 sqldelight-sqlite-driver = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "sqldelight" }
 sqldelight-android-driver = { module = "app.cash.sqldelight:android-driver", version.ref = "sqldelight" }
 sqldelight-native-driver = { module = "app.cash.sqldelight:native-driver", version.ref = "sqldelight" }
+
+# Image Loading
+coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-network-ktor = { module = "io.coil-kt.coil3:coil-network-ktor3", version.ref = "coil" }
 
 # Logging
 kermit = { module = "co.touchlab:kermit", version.ref = "kermit" }

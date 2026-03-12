@@ -20,7 +20,8 @@ internal data class CharacterSheet(
     val statusEffects: List<StatusEffect> = emptyList(),
     // Tier system fields
     val currentGrade: Grade = Grade.E_GRADE,
-    val playerClass: PlayerClass = PlayerClass.NONE,
+    val playerClass: PlayerClass = PlayerClass.NONE,       // Internal archetype for combat math
+    val dynamicClass: DynamicClassInfo? = null,             // Rich, GM-generated class info
     val classEvolutionPath: List<String> = emptyList(), // Track evolution history
     val profession: Profession = Profession.NONE,
     val professionEvolutionPath: List<String> = emptyList(),
@@ -29,7 +30,11 @@ internal data class CharacterSheet(
     val actionInsightTracker: ActionInsightTracker = ActionInsightTracker(),
     val discoveredFusions: List<DiscoveredFusion> = emptyList()
 ) {
-    fun xpToNextLevel(): Long = (level + 1) * 100L
+    fun xpToNextLevel(): Long = when {
+        level < 5 -> (level + 1) * 50L   // Early levels: 100, 150, 200, 250, 300
+        level < 10 -> (level + 1) * 100L  // Mid levels: 600, 700, 800, 900, 1000
+        else -> (level + 1) * 200L         // Late levels scale harder
+    }
 
     fun effectiveStats(): Stats {
         // Start with base stats, ensuring defense has a floor from CON/DEX
@@ -125,8 +130,9 @@ internal data class CharacterSheet(
         )
     }
 
-    fun chooseInitialClass(chosenClass: PlayerClass): CharacterSheet {
-        // Apply class stat bonuses
+    fun chooseInitialClass(chosenClass: PlayerClass, classInfo: DynamicClassInfo? = null): CharacterSheet {
+        // Apply class stat bonuses — skills are NOT auto-granted.
+        // The GM presents skill options and the player picks via grant_skill.
         val newStats = Stats(
             strength = baseStats.strength + chosenClass.statBonuses.strength,
             dexterity = baseStats.dexterity + chosenClass.statBonuses.dexterity,
@@ -136,10 +142,17 @@ internal data class CharacterSheet(
             charisma = baseStats.charisma + chosenClass.statBonuses.charisma
         )
 
+        val displayName = classInfo?.name ?: chosenClass.displayName
+
         return copy(
             playerClass = chosenClass,
+            dynamicClass = classInfo ?: DynamicClassInfo(
+                name = chosenClass.displayName,
+                description = chosenClass.description,
+                archetype = chosenClass.archetype
+            ),
             baseStats = newStats,
-            classEvolutionPath = listOf(chosenClass.displayName)
+            classEvolutionPath = listOf(displayName)
         )
     }
 
@@ -364,13 +377,17 @@ internal data class CharacterSheet(
 
     private fun calculateLevel(totalXP: Long): Int {
         var level = 1
-        var xpRequired = 100L
         var accumulated = 0L
 
-        while (totalXP >= accumulated + xpRequired) {
+        while (true) {
+            val xpRequired = when {
+                level < 5 -> (level + 1) * 50L
+                level < 10 -> (level + 1) * 100L
+                else -> (level + 1) * 200L
+            }
+            if (totalXP < accumulated + xpRequired) break
             accumulated += xpRequired
             level++
-            xpRequired = level * 100L
         }
 
         return level
@@ -416,9 +433,11 @@ internal data class Resources(
 ) {
     companion object {
         fun fromStats(stats: Stats): Resources {
-            val hp = 100 + (stats.constitution * 10)
-            val mana = 50 + (stats.intelligence * 5)
-            val energy = 100 + (stats.dexterity * 2)
+            // HP: 30 base + 3 per CON. Level 1 with 10 CON = 60 HP.
+            // Keeps early combat dangerous without being instantly lethal.
+            val hp = 30 + (stats.constitution * 3)
+            val mana = 20 + (stats.intelligence * 3)
+            val energy = 40 + (stats.dexterity * 2)
 
             return Resources(
                 currentHP = hp,
@@ -432,9 +451,9 @@ internal data class Resources(
     }
 
     fun restoreOnLevelUp(): Resources {
-        val hpIncrease = 10
-        val manaIncrease = 5
-        val energyIncrease = 10
+        val hpIncrease = 5
+        val manaIncrease = 3
+        val energyIncrease = 5
 
         return copy(
             currentHP = maxHP + hpIncrease,

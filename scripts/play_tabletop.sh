@@ -2,9 +2,11 @@
 # Play RPGenerator as Pip — enchanted ink sprite companion
 # Seed: Tabletop (Classic Fantasy)
 #
-# Usage: ./scripts/play_tabletop.sh [claude|codex]
+# Usage: ./scripts/play_tabletop.sh [claude|codex] [voice]
 # Prerequisites: dev server running (./scripts/dev-server.sh)
 set -e
+TTS_VOICE="nova"  # OpenAI bright female — excitable literary sprite
+TTS_INSTRUCTIONS="Bright, excitable, breathless with enthusiasm. Like a young librarian who just discovered her favorite book is REAL. Speaks fast when excited, whispers dramatically for suspense."
 source "$(cd "$(dirname "$0")" && pwd)/_play_common.sh"
 
 PERSONALITY=$(extract_personality "PipCompanion.kt")

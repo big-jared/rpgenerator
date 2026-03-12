@@ -1,5 +1,6 @@
 package com.rpgenerator.core.rules
 
+import com.rpgenerator.core.agents.MonsterGenerationResult
 import com.rpgenerator.core.domain.*
 import com.rpgenerator.core.skill.DamageType
 import com.rpgenerator.core.skill.Skill
@@ -11,18 +12,127 @@ import kotlin.random.Random
  * Multi-round combat engine. Each method resolves one round of combat
  * and returns the updated state + a structured result the GM can narrate from.
  */
-internal class CombatEngine {
+internal class CombatEngine(
+    private val bestiary: Bestiary? = null
+) {
 
     /**
      * Create an enemy and enter combat.
+     * If a bestiary is available, looks up the enemy template first for lore-accurate stats/abilities.
+     * If a MonsterGenerationResult is provided (from AI agent), uses its rich data.
+     * Falls back to generic procedural generation for unknown enemies.
      */
-    fun spawnEnemy(name: String, danger: Int, state: GameState): Pair<GameState, Enemy> {
-        val enemy = generateEnemy(name, danger, state.playerLevel)
+    fun spawnEnemy(
+        name: String,
+        danger: Int,
+        state: GameState,
+        zoneId: String? = null,
+        generatedMonster: MonsterGenerationResult? = null
+    ): Pair<GameState, Enemy> {
+        val template = bestiary?.findEnemy(name, zoneId ?: state.currentLocation.id)
+        val enemy = if (template != null) {
+            spawnFromTemplate(template, state.playerLevel)
+        } else if (generatedMonster != null) {
+            spawnFromGenerated(name, danger, state.playerLevel, generatedMonster)
+        } else {
+            generateEnemy(name, danger, state.playerLevel)
+        }
         val combat = CombatState(
             enemy = enemy,
             playerInitiative = rollInitiative(state.characterSheet.effectiveStats().dexterity, enemy.speed)
         )
         return state.copy(combatState = combat) to enemy
+    }
+
+    /**
+     * Create an Enemy from a bestiary template. Uses the template's abilities, description,
+     * and visual description. For bosses, all phase abilities are included — later-phase
+     * abilities start with inflated cooldowns so they don't fire immediately.
+     */
+    private fun spawnFromTemplate(template: EnemyTemplate, playerLevel: Int): Enemy {
+        val d = template.baseDanger.coerceIn(1, 10)
+        // Clamp playerLevel within template's range for scaling
+        val effectiveLevel = playerLevel.coerceIn(template.levelRange)
+        val levelScale = 1.0 + (effectiveLevel - 1) * 0.12
+
+        val baseHP = (5 + d * d + d * 5) * levelScale
+        val hp = (baseHP * template.xpMultiplier).toInt() // bosses get more HP via xpMultiplier
+        val attack = (3 + d * 3 * levelScale).toInt()
+        val defense = (d * levelScale).toInt()
+        val speed = 6 + d * 2
+        val xp = ((30L + d * 20L) * effectiveLevel * template.xpMultiplier).toLong()
+
+        // Convert ability templates to combat abilities
+        val abilities = template.abilities.map { tmpl ->
+            val initialCooldown = if (tmpl.unlockPhase > 1) {
+                // Later-phase abilities start on cooldown proportional to phase
+                tmpl.cooldown + (tmpl.unlockPhase - 1) * 2
+            } else {
+                0
+            }
+            EnemyAbility(
+                name = tmpl.name,
+                damage = tmpl.bonusDamage,
+                cooldown = tmpl.cooldown,
+                currentCooldown = initialCooldown,
+                description = tmpl.description,
+                damageType = tmpl.damageType
+            )
+        }
+
+        return Enemy(
+            name = template.name,
+            danger = d,
+            maxHP = hp,
+            currentHP = hp,
+            attack = attack,
+            defense = defense,
+            speed = speed,
+            abilities = abilities,
+            description = template.description,
+            visualDescription = template.visualDescription,
+            portraitResource = template.portraitResource,
+            xpValue = xp,
+            lootTier = template.lootTier,
+            immunities = template.immunities,
+            vulnerabilities = template.vulnerabilities,
+            resistances = template.resistances
+        )
+    }
+
+    /**
+     * Create an Enemy from AI-generated monster data.
+     * Stats are procedurally computed (same formulas as generateEnemy),
+     * but abilities, immunities, descriptions, and visual data come from the agent.
+     */
+    private fun spawnFromGenerated(name: String, danger: Int, playerLevel: Int, result: MonsterGenerationResult): Enemy {
+        val d = danger.coerceIn(1, 10)
+        val levelScale = 1.0 + (playerLevel - 1) * 0.12
+
+        val baseHP = (5 + d * d + d * 5) * levelScale
+        val hp = baseHP.toInt()
+        val attack = (3 + d * 3 * levelScale).toInt()
+        val defense = (d * levelScale).toInt()
+        val speed = 6 + d * 2
+        val xp = (30L + d * 20L) * playerLevel
+
+        return Enemy(
+            name = name,
+            danger = d,
+            maxHP = hp,
+            currentHP = hp,
+            attack = attack,
+            defense = defense,
+            speed = speed,
+            abilities = result.abilities,
+            description = result.description,
+            visualDescription = result.visualDescription,
+            xpValue = xp,
+            lootTier = result.lootTier,
+            immunities = result.immunities,
+            vulnerabilities = result.vulnerabilities,
+            resistances = result.resistances
+        )
     }
 
     /**
@@ -312,16 +422,17 @@ internal class CombatEngine {
 
     private fun generateEnemy(name: String, danger: Int, playerLevel: Int): Enemy {
         val d = danger.coerceIn(1, 10)
-        val levelScale = 1.0 + (playerLevel - 1) * 0.15
+        val levelScale = 1.0 + (playerLevel - 1) * 0.12
 
-        // HP scales with danger^1.5 and player level
-        val baseHP = (20 + d * 15) * levelScale
+        // HP: low-danger enemies die in 2-4 hits, bosses are slugfests
+        // Danger 1 = ~15 HP, Danger 2 = ~25 HP, Danger 5 = ~55 HP, Danger 10 = ~115 HP
+        val baseHP = (5 + d * d + d * 5) * levelScale
         val hp = baseHP.toInt()
 
-        // Attack/defense/speed scale with danger
-        val attack = (2 + d * 2 * levelScale).toInt()
-        val defense = (d * 1.5 * levelScale).toInt()
-        val speed = (8 + d * 2)
+        // Attack: enemies should deal ~10-20% of player HP per hit at equal level
+        val attack = (3 + d * 3 * levelScale).toInt()
+        val defense = (d * levelScale).toInt()
+        val speed = (6 + d * 2)
 
         // XP value
         val xp = (30L + d * 20L) * playerLevel
@@ -469,21 +580,32 @@ internal class CombatEngine {
 
     /**
      * Apply damage type-specific mitigation.
-     * PHYSICAL → reduced by defense/3
-     * MAGICAL/FIRE/ICE/LIGHTNING/HOLY/DARK → reduced by enemy defense/5 (magic pierces armor)
-     * TRUE → ignores all defense
-     * ICE → chance to apply SLOWED
-     * LIGHTNING → chance to apply STUNNED
-     * DARK → 20% life steal to player
+     * Checks enemy immunities (0 damage), vulnerabilities (1.5x), and resistances (0.5x) first.
+     * Then applies base reduction:
+     *   PHYSICAL → reduced by defense/3
+     *   MAGICAL/elemental → reduced by defense/5 (magic pierces armor)
+     *   TRUE → ignores all defense and immunities
      */
     private fun applyDamageTypeReduction(rawDamage: Int, type: DamageType, enemy: Enemy): Int {
-        return when (type) {
-            DamageType.PHYSICAL -> (rawDamage - enemy.defense / 3).coerceAtLeast(1)
-            DamageType.TRUE -> rawDamage // ignores all defense
-            DamageType.MAGICAL, DamageType.FIRE, DamageType.ICE,
-            DamageType.LIGHTNING, DamageType.HOLY, DamageType.DARK,
-            DamageType.POISON -> (rawDamage - enemy.defense / 5).coerceAtLeast(1)
+        // TRUE damage ignores everything
+        if (type == DamageType.TRUE) return rawDamage
+
+        // Immunity check
+        if (type in enemy.immunities) return 0
+
+        // Vulnerability/resistance multiplier
+        val multiplier = when {
+            type in enemy.vulnerabilities -> 1.5
+            type in enemy.resistances -> 0.5
+            else -> 1.0
         }
+
+        val baseMitigation = when (type) {
+            DamageType.PHYSICAL -> (rawDamage - enemy.defense / 3).coerceAtLeast(1)
+            else -> (rawDamage - enemy.defense / 5).coerceAtLeast(1)
+        }
+
+        return (baseMitigation * multiplier).toInt().coerceAtLeast(if (type in enemy.vulnerabilities) 1 else 0)
     }
 
     /**

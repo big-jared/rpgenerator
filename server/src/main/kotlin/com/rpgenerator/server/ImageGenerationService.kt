@@ -51,13 +51,15 @@ class ImageGenerationService(
 
     /**
      * Generate an item illustration.
+     * @param iconSize if true, resize to 128px for inventory grid icons
      */
-    suspend fun generateItemArt(request: ItemArtRequest): ImageResult {
+    suspend fun generateItemArt(request: ItemArtRequest, iconSize: Boolean = false): ImageResult {
         val prompt = buildItemPrompt(request)
         return generateImage(
             prompt = prompt,
             negativePrompt = ITEM_NEGATIVE,
-            aspectRatio = "1:1"
+            aspectRatio = "1:1",
+            maxDimension = if (iconSize) 128 else 512
         )
     }
 
@@ -225,16 +227,15 @@ class ImageGenerationService(
     }
 
     private fun buildItemPrompt(req: ItemArtRequest): String = buildString {
-        append(STYLE_PREFIX)
-        append("Item illustration on dark background, ")
-        append("${req.name}. ")
-        append("${req.description}. ")
+        append("Square fantasy RPG inventory icon, oil painting style, detailed brushwork, fantasy RPG UI aesthetic. ")
+        append("${req.name}: ${req.description}. ")
 
         if (req.rarity != null) {
             append(getRarityVisuals(req.rarity))
         }
 
-        append("Clean item card style, centered composition. ")
+        append("Dark vignette background, warm tones, painterly rendering, centered composition, ")
+        append("no text, no words, no letters, no writing. ")
         append(QUALITY_SUFFIX)
     }
 

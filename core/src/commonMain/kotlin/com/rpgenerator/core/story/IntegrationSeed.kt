@@ -28,9 +28,9 @@ object IntegrationSeed {
         ),
     
         startingLocation = StartingLocation(
-            name = "The Void → The Crucible",
-            type = "Class Selection Void, then Tutorial Dimension Hub",
-            description = "Tuesday. A completely ordinary day — then the sky splits. White light. You wake in a featureless void with a pillar of blue-white light showing class options. No explanation. Just a timer and a choice. After selecting your class, the void shatters and you drop into the Crucible — a massive stone courtyard in an alien dimension with a purple sky and two suns. Over a thousand other humans are here, all newly integrated. A leaderboard materializes in the sky. Everyone starts at Level 1, E-Grade, zero Tutorial Points.",
+            name = "The Crucible",
+            type = "Tutorial Dimension Hub",
+            description = "A massive stone courtyard in an alien dimension under a purple sky with two suns. Over a thousand humans stumble around, all newly Integrated — ripped from ordinary lives and dropped here without explanation. A leaderboard materializes in the sky above. Everyone starts at Level 1, E-Grade, zero Tutorial Points. The air hums with alien energy. The System watches.",
             features = listOf(
                 "The Crucible hub — safe zone with leaderboard, Tutorial Point shop (level-gated), party formation area",
                 "Four zones: Greenreach (bone-bark forest, L1-9), Ashlands (volcanic, L5-14), Drowned Shelf (tidal, L10-19), The Spire (tower, L15-25)",
@@ -470,6 +470,7 @@ object IntegrationSeed {
     - Be generic — every monster, zone, and fight should feel specific
     - Forget the leaderboard — always there, always updating
     - Forget the other participants — the player is never alone in the tutorial
+    - FABRICATE System notifications. You MUST NOT invent [BRACKETED SYSTEM MESSAGES] that contradict or go beyond what the game engine provides. If the game engine says a class was selected, narrate it as successful. If the game engine says a skill was granted, narrate the player receiving it. You describe the EXPERIENCE of System events — you do NOT create fake ones. The System's data is sacred and comes only from the engine.
         """.trimIndent(),
     
         tone = listOf("brutal", "visceral", "competitive", "empowering"),

@@ -41,6 +41,12 @@ abstract class Game internal constructor(
     open fun getEventLog(): List<GameEvent> = emptyList()
 
     /**
+     * Get the full tool call log for this session.
+     * Returns every tool call with args, result, timing, and caller info.
+     */
+    open fun getToolCallLog(): List<Map<String, Any?>> = emptyList()
+
+    /**
      * Get debug snapshot of internal game state.
      * Returns a map of key-value pairs describing internal state
      * beyond what getState() exposes (e.g. narrator context, story foundation).
@@ -71,6 +77,12 @@ abstract class Game internal constructor(
      * Maps to a PrebuiltVoiceConfig voice name.
      */
     open fun getCompanionVoice(): String = "Kore"
+
+    /**
+     * Get detailed NPC information for the detail screen.
+     * Returns null if the NPC is not found.
+     */
+    open fun getNpcDetails(npcId: String): NPCDetails? = null
 }
 
 @Serializable
