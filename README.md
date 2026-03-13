@@ -30,6 +30,14 @@ CLIENTS                         SERVER (:8080)                   EXTERNAL
                               |  Image Svc   |------------+
                               +-------+-------+
                                       |
+                              +-------+-------+     +-----------+
+                              |  Lyria Music  |---->| Lyria     |
+                              |  Service      |<----| Realtime  |
+                              +-------+-------+     | API       |
+                               adaptive music       | (48kHz    |
+                               per mood              |  stereo)  |
+                                                     +-----------+
+                                      |
                                       v
                               +---------------+
                               |   Core Lib    |
@@ -101,11 +109,10 @@ The engine spawns specialized AI agents as needed. Each maintains its own conver
 | **Narrator** | Second-person prose, show-don't-tell, pacing control | | [`NarratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NarratorAgent.kt) |
 | **System** | Clinical voice of the System — tier/grade progression, notifications | | [`SystemAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/SystemAgent.kt) |
 | **NPC** | Dynamic dialogue with dedicated streams per named NPC | | [`NPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NPCAgent.kt) |
-| **Autonomous NPC** | NPCs act independently — move, react, pursue goals | | [`AutonomousNPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/AutonomousNPCAgent.kt) |
 | **Quest Generator** | Contextual quests fitting player level and location | | [`QuestGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/QuestGeneratorAgent.kt) |
-| **Planner** | Async long-term plot architect — foreshadowing, arc planning | | [`PlannerAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/PlannerAgent.kt) |
 | **Location Generator** | Creates immersive locations with biome, features, lore | images | [`LocationGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/LocationGeneratorAgent.kt) |
 | **Monster Generator** | Generates monster profiles with abilities, resistances, lore | images | [`MonsterGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/MonsterGeneratorAgent.kt) |
+| **NPC Generator** | Generates NPC personalities, backstories, and portraits | images | [`NPCArchetypeGenerator.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/generation/NPCArchetypeGenerator.kt) |
 | **Item Generator** | Enriches item descriptions and generates visual prompts | images | [`ItemGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/ItemGeneratorAgent.kt) |
 | **Class Generator** | Dynamic class options based on backstory and world context | | [`ClassGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/ClassGeneratorAgent.kt) |
 | **Skill Generator** | Dynamic skills for level-ups, initial options, custom creation | | [`SkillGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/SkillGeneratorAgent.kt) |
@@ -212,7 +219,8 @@ Requires Android SDK and a device/emulator with Google Play Services. The app us
 ## Tech Stack
 
 - **Kotlin Multiplatform** (JVM, iOS, Android)
-- **Gemini SDK** (`com.google.genai:google-genai:1.41.0`) — Live API for voice, text for agents
+- **Gemini SDK** (`com.google.genai:google-genai:1.41.0`) — Live API for voice, text for agents, native image generation
+- **Lyria Realtime API** — Adaptive background music generation (48kHz stereo PCM, mood-driven)
 - **Ktor** — Server (Netty), client (OkHttp on Android)
 - **Compose Multiplatform** — Mobile UI (Android, iOS stubs)
 - **SQLDelight** — Game state persistence
