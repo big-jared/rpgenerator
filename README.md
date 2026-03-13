@@ -95,17 +95,21 @@ Two client paths — both go through the server:
 
 The engine spawns specialized AI agents as needed. Each maintains its own conversation history and system prompt.
 
-| Agent | Role | Prompt |
-|-------|------|--------|
-| **Game Master** | Intent routing — decides what happens when the player acts | [`GMPromptBuilder.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/GMPromptBuilder.kt) |
-| **Narrator** | Second-person prose, show-don't-tell, pacing control | [`NarratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NarratorAgent.kt) |
-| **System** | Clinical voice of the System — tier/grade progression, notifications | [`SystemAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/SystemAgent.kt) |
-| **NPC** | Dynamic dialogue with dedicated streams per named NPC | [`NPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NPCAgent.kt) |
-| **Autonomous NPC** | NPCs act independently — move, react, pursue goals without player input | [`AutonomousNPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/AutonomousNPCAgent.kt) |
-| **Quest Generator** | Contextual quests fitting player level and location | [`QuestGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/QuestGeneratorAgent.kt) |
-| **Planner** | Async long-term plot architect — foreshadowing, arc planning 50-100 levels ahead | [`PlannerAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/PlannerAgent.kt) |
-| **Location Generator** | Creates immersive locations on discovery with biome, features, lore | [`LocationGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/LocationGeneratorAgent.kt) |
-| **Companion** | Voice personality — the player's guide and emotional anchor | [`companions/`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/) |
+| Agent | Role | Multimodal | Source |
+|-------|------|:----------:|--------|
+| **Game Master** | Intent routing — decides what happens when the player acts | | [`GMPromptBuilder.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/GMPromptBuilder.kt) |
+| **Narrator** | Second-person prose, show-don't-tell, pacing control | | [`NarratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NarratorAgent.kt) |
+| **System** | Clinical voice of the System — tier/grade progression, notifications | | [`SystemAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/SystemAgent.kt) |
+| **NPC** | Dynamic dialogue with dedicated streams per named NPC | | [`NPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/NPCAgent.kt) |
+| **Autonomous NPC** | NPCs act independently — move, react, pursue goals | | [`AutonomousNPCAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/AutonomousNPCAgent.kt) |
+| **Quest Generator** | Contextual quests fitting player level and location | | [`QuestGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/QuestGeneratorAgent.kt) |
+| **Planner** | Async long-term plot architect — foreshadowing, arc planning | | [`PlannerAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/PlannerAgent.kt) |
+| **Location Generator** | Creates immersive locations with biome, features, lore | images | [`LocationGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/LocationGeneratorAgent.kt) |
+| **Monster Generator** | Generates monster profiles with abilities, resistances, lore | images | [`MonsterGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/MonsterGeneratorAgent.kt) |
+| **Item Generator** | Enriches item descriptions and generates visual prompts | images | [`ItemGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/ItemGeneratorAgent.kt) |
+| **Class Generator** | Dynamic class options based on backstory and world context | | [`ClassGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/ClassGeneratorAgent.kt) |
+| **Skill Generator** | Dynamic skills for level-ups, initial options, custom creation | | [`SkillGeneratorAgent.kt`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/SkillGeneratorAgent.kt) |
+| **Companion** | Voice personality — the player's guide and emotional anchor | voice | [`companions/`](core/src/commonMain/kotlin/com/rpgenerator/core/agents/companions/) |
 
 Agents are lazy-initialized and only appear in the debug UI when first used. A `LoggingLLMInterface` wrapper intercepts all LLM calls for the debug dashboard.
 
