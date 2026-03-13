@@ -9,43 +9,87 @@ The engine handles agent orchestration, game state, combat, quests, and narratio
 ## How It Works
 
 ```
-┌─────────────────────┐
-│  Google Gemini Live  │
-│  (voice + audio)     │
-└──────────┬──────────┘
-           │ audio ↕ tool calls ↕
-┌──────────┴──────────────┐       ┌──────────────────────────────┐
-│   Mobile App (Android)  │       │   Any MCP Client             │
-│                         │       │   (Claude Code, custom, etc.) │
-│   Mic/Speaker ↔ Gemini  │       │                              │
-│   Tool results ↔ Server │       │   Companion prompt           │
-│                         │       │   (Hank/Pip/Glitch/Bramble)  │
-└──────────────┬──────────┘       └──────────────┬───────────────┘
-               │ REST (tool exec)                │ MCP (HTTP)
-               │                                 │
-┌──────────────▼─────────────────────────────────▼───────────────┐
-│                    RPGenerator Server (:8080)                      │
-│                                                                   │
-│   REST API              MCP Endpoint                              │
-│   /api/game/*/tool      /mcp                                      │
-│                                                                   │
-│   ┌───────────────────────────────────────────────────────────┐   │
-│   │                    RPGenerator Core                       │   │
-│   │   Game Master ─── Narrator ─── System Agent               │   │
-│   │   NPC Agents ─── Quest Gen ─── Planner                    │   │
-│   │   Location Gen ─── Autonomous NPCs                        │   │
-│   │                                                           │   │
-│   │   GameState ─── Combat ─── Persistence                    │   │
-│   └───────────────────────────────────────────────────────────┘   │
-│                            │                                      │
-│                       LLM Provider                                │
-│                 (Gemini / Claude / Codex)                          │
-└───────────────────────────────────────────────────────────────────┘
+CLIENTS                         SERVER (:8080)                   EXTERNAL
+
+                               +---------------+     +-----------+
++--------------+  WS (audio)   |               |---->|           |
+| Mobile App   |-------------->|   WebSocket   |<----| Gemini    |
+| Android/iOS  |<--------------| Handler       |     | Live API  |
+|              |  events,state |               |     +-----------+
+| mic -> server|  audio,images | owns session  |
+| server -> spk|               | gates audio   |     +-----------+
++--------------+               | during tools  |     | Gemini    |
+                               +-------+-------+     | Flash     |
++--------------+                       |              | Image     |
+| MCP Client   |  POST /mcp   +-------+-------+     | (native   |
+| (Claude Code)|------------->| Session       |     | multi-    |
+|              |<--------------| Manager       |     | modal)    |
++--------------+  JSON-RPC    +-------+-------+     +-----------+
+                                      |                    ^
+                              +-------+-------+            |
+                              |  Image Svc   |------------+
+                              +-------+-------+
+                                      |
+                                      v
+                              +---------------+
+                              |   Core Lib    |
+                              +---------------+
+
+
+CORE LIBRARY (Kotlin Multiplatform)
+
++--------------------------------------------------------------------+
+|                                                                    |
+|  GameImpl (session wrapper, persistence, public API)               |
+|      |                                                             |
+|      +---> UnifiedToolContractImpl (35+ stateless tools)           |
+|      |       Queries:  stats, inventory, npcs, quests, location    |
+|      |       Actions:  move, talk, attack, equip, use_item         |
+|      |       Quests:   accept, update, complete                    |
+|      |       Gen:      scene_art, portrait, item_art               |
+|      |                                                             |
+|      +---> GameOrchestrator (main game loop)                       |
+|              |                                                     |
+|              +-- Phase 1+2: decideAgent --> tool calls --> state    |
+|              |                                                     |
+|              +-- Phase 3:   narrateAgent -> prose -> GameEvent     |
+|                  (skipped for CHARACTER_SETUP and QUERY turns,     |
+|                   only runs for action / exploration / combat)     |
+|                                                                    |
+|  Agents (lazy-init)          World Seeds + Companions              |
+|  +- decideAgent              +- IntegrationSeed -> Hank            |
+|  +- narrateAgent             +- TabletopSeed   -> Pip              |
+|  +- npcAgent                 +- CrawlerSeed    -> Glitch           |
+|  +- questGenerator           +- QuietLifeSeed  -> Bramble          |
+|  +- locationGenerator                                              |
+|  +- storyPlanning           GameState (mutable internal)           |
+|                              +- PlayerStats (hp, mp, xp, level)    |
+|  LLMInterface                +- Location graph                     |
+|  +- Gemini Flash             +- NPCs by location                   |
+|  +- Claude CLI               +- Inventory + equipment              |
+|  +- Codex CLI                +- Active quests                      |
+|  +- Mock                     +- Combat state                       |
+|                                                                    |
+|  GameEvent types (emitted as Flow)                                 |
+|  +- NarratorText, NPCDialogue, CombatLog, SystemNotification      |
+|  +- StatChange, ItemGained, QuestUpdate                            |
+|  +- SceneImage, NPCPortrait, NarratorAudio, MusicChange           |
+|                                                                    |
++--------------------------------------------------------------------+
+
+
+AUDIO PATH
+
+Mic --> App --> Server WS --> Gemini Live --> Server WS --> App --> Speaker
+           PCM 16kHz              |              PCM 24kHz
+                                  v
+                           tool calls exec'd
+                           on server (gated)
 ```
 
-Two client paths:
-- **Mobile**: Player ↔ Gemini Live (Google) ↔ App ↔ Server REST API for tool execution
-- **MCP**: Any MCP client (Claude Code, custom apps, etc.) ↔ Server MCP endpoint for tool execution
+Two client paths — both go through the server:
+- **Mobile**: Mic -> Server WebSocket -> Gemini Live API -> Server -> Speaker (server owns the Gemini session and gates audio while executing tool calls)
+- **MCP**: Any MCP client (Claude Code, etc.) -> Server MCP endpoint (`/mcp`) -> Core engine
 
 ### Agents
 
@@ -144,7 +188,7 @@ Available tool categories:
 
 ### 4. Mobile App (Android)
 
-The Android app connects directly to Gemini Live for voice and to the dev server for game state.
+The Android app connects to the dev server, which proxies audio to/from Gemini Live and handles all game state.
 
 **Setup:**
 
