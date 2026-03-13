@@ -23,6 +23,20 @@ class SwiftGeminiBridge: NativeGeminiBridge {
     private var isAudioSetup = false
     private var isRecording = false
 
+    // Lyria music — separate player node, 48kHz stereo
+    private var musicPlayerNode: AVAudioPlayerNode? = nil
+    private var musicPlaybackFormat: AVAudioFormat? = nil
+    private var musicVolume: Float = 0.15  // Background music level
+
+    // Dedicated audio queue — keep audio scheduling off the main thread
+    private let audioQueue = DispatchQueue(label: "com.rpgenerator.audio", qos: .userInteractive)
+
+    // Audio accumulation buffer — batch small chunks into larger buffers to avoid micro-gaps
+    private var pendingAudioData = Data()
+    // ~80ms at 24kHz 16-bit mono = 3840 bytes (2 chunks of 1920)
+    // Low enough to stay close to transcript timing, high enough to avoid per-chunk gaps
+    private let audioFlushThreshold = 3840
+
     // MARK: - Configuration
 
     func configure(serverUrl: String) {
@@ -49,7 +63,12 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             // Use .default mode — .voiceChat forces earpiece which fights .defaultToSpeaker.
             // Hardware AEC is provided by setVoiceProcessingEnabled() on the engine instead.
             try avSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            // Match our audio sample rate to reduce resampling artifacts
+            try avSession.setPreferredSampleRate(24000)
+            // Low buffer duration for snappy playback (5ms)
+            try avSession.setPreferredIOBufferDuration(0.005)
             try avSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("SwiftGeminiBridge: Audio session: sampleRate=\(avSession.sampleRate), bufferDuration=\(avSession.ioBufferDuration)")
         } catch {
             print("SwiftGeminiBridge: Audio session error: \(error)")
             return
@@ -70,19 +89,33 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             print("SwiftGeminiBridge: Voice processing enable failed: \(error)")
         }
 
-        // 3. Build playback format — server sends 24kHz 16-bit mono PCM
+        // 3. Build playback format — Float32 at 24kHz for clean sample-rate conversion.
+        //    Int16 → mixer caused scratchy artifacts; Float32 lets AVAudioEngine's
+        //    internal SRC produce smooth output at the hardware rate (48kHz).
         guard let outFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
+            commonFormat: .pcmFormatFloat32,
             sampleRate: 24000,
             channels: 1,
-            interleaved: true
+            interleaved: false
         ) else { return }
 
-        // 4. Attach player and connect with our PCM format.
-        //    AVAudioEngine handles sample rate conversion to the mixer automatically.
+        // 4. Attach voice player and connect with Float32 format.
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: outFormat)
         print("SwiftGeminiBridge: Mixer format: \(engine.mainMixerNode.outputFormat(forBus: 0))")
+
+        // 4b. Attach music player — Lyria outputs 48kHz stereo 16-bit PCM,
+        //     we play it as Float32 stereo at 48kHz, mixed quieter behind voice.
+        let musicPlayer = AVAudioPlayerNode()
+        guard let musicFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48000,
+            channels: 2,
+            interleaved: false
+        ) else { return }
+        engine.attach(musicPlayer)
+        engine.connect(musicPlayer, to: engine.mainMixerNode, format: musicFormat)
+        musicPlayer.volume = musicVolume
 
         // 5. Read input format AFTER enabling voice processing (VPIO may change it)
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -108,13 +141,16 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             return
         }
 
-        // 7. Now that engine is running, start player
+        // 7. Now that engine is running, start players
         player.play()
+        musicPlayer.play()
 
         self.audioEngine = engine
         self.playerNode = player
         self.playbackFormat = outFormat
         self.audioConverter = converter
+        self.musicPlayerNode = musicPlayer
+        self.musicPlaybackFormat = musicFormat
         self.isAudioSetup = true
 
         // Monitor engine config changes (VPIO can trigger reconfiguration)
@@ -139,11 +175,22 @@ class SwiftGeminiBridge: NativeGeminiBridge {
         guard let engine = audioEngine, let player = playerNode, let format = playbackFormat else { return }
         if !engine.isRunning {
             print("SwiftGeminiBridge: Engine stopped after config change, reconnecting and restarting")
-            // Reconnect player — config change invalidates existing connections
+            // Reconnect players — config change invalidates existing connections
             engine.connect(player, to: engine.mainMixerNode, format: format)
+            if let musicPlayer = musicPlayerNode, let musicFormat = musicPlaybackFormat {
+                engine.connect(musicPlayer, to: engine.mainMixerNode, format: musicFormat)
+                musicPlayer.volume = musicVolume
+            }
             do {
                 try engine.start()
                 player.play()
+                musicPlayerNode?.play()
+                // Re-install mic tap if recording was active — engine stop removes all taps
+                if isRecording {
+                    isRecording = false  // reset so startRecording() re-installs
+                    startRecording()
+                    print("SwiftGeminiBridge: Re-installed mic tap after config change")
+                }
             } catch {
                 print("SwiftGeminiBridge: Engine restart after config change failed: \(error)")
             }
@@ -180,13 +227,17 @@ class SwiftGeminiBridge: NativeGeminiBridge {
         // Set up audio graph synchronously before connecting
         setupAudio()
 
-        guard let url = URL(string: "\(serverUrl)/ws/receptionist") else {
-            callback.onError(message: "Invalid receptionist WebSocket URL: \(serverUrl)/ws/receptionist")
+        var urlString = "\(serverUrl)/ws/receptionist"
+        if let token = authToken {
+            urlString += "?token=\(token)"
+        }
+        guard let url = URL(string: urlString) else {
+            callback.onError(message: "Invalid receptionist WebSocket URL: \(urlString)")
             callback.onDisconnected()
             return
         }
 
-        print("SwiftGeminiBridge: Connecting to receptionist at \(url)")
+        print("SwiftGeminiBridge: Connecting to receptionist at \(serverUrl)/ws/receptionist (token=\(authToken != nil ? "yes" : "none"))")
         let task = URLSession.shared.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -218,13 +269,17 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             return
         }
 
-        guard let url = URL(string: "\(serverUrl)/ws/game/\(sessionId)") else {
+        var urlString = "\(serverUrl)/ws/game/\(sessionId)"
+        if let token = authToken {
+            urlString += "?token=\(token)"
+        }
+        guard let url = URL(string: urlString) else {
             callback.onError(message: "Invalid game WebSocket URL")
             callback.onDisconnected()
             return
         }
 
-        print("SwiftGeminiBridge: Connecting to game session at \(url)")
+        print("SwiftGeminiBridge: Connecting to game session \(sessionId) (token=\(authToken != nil ? "yes" : "none"))")
         let task = URLSession.shared.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
@@ -242,9 +297,15 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
     /// Session ID for game mode — set by Kotlin side before calling startGameSession
     private var currentSessionId: String? = nil
+    /// Auth token — appended as ?token= query param on WebSocket URLs
+    private var authToken: String? = nil
 
     func setSessionId(sessionId: String) {
         self.currentSessionId = sessionId
+    }
+
+    func setAuthToken(token: String) {
+        self.authToken = token.isEmpty ? nil : token
     }
 
     // MARK: - WebSocket Receive Loop
@@ -257,14 +318,23 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             case .success(let message):
                 switch message {
                 case .string(let text):
-                    DispatchQueue.main.async {
-                        self.processServerMessage(text)
+                    // Fast-path: detect audio messages and route directly to audio queue
+                    // to avoid main-queue latency for the most frequent message type
+                    if text.hasPrefix("{\"type\":\"audio\"") || text.hasPrefix("{\"type\": \"audio\"") {
+                        self.processAudioMessage(text)
+                    } else {
+                        DispatchQueue.main.async {
+                            self.processServerMessage(text)
+                        }
                     }
                 case .data(let data):
-                    // Binary frame — treat as raw PCM audio
-                    DispatchQueue.main.async {
+                    // Binary frames use a prefix byte to distinguish streams:
+                    //   0x02 = Lyria music PCM (48kHz stereo 16-bit)
+                    //   anything else = voice PCM audio from Gemini (24kHz mono 16-bit)
+                    if data.count > 1 && data[0] == 0x02 {
+                        self.playMusicAudio(data.subdata(in: 1..<data.count))
+                    } else {
                         self.playPcmAudio(data)
-                        self.callback?.onAudio(pcmData: data.toKotlinByteArray())
                     }
                 @unknown default:
                     break
@@ -282,6 +352,20 @@ class SwiftGeminiBridge: NativeGeminiBridge {
         }
     }
 
+    /// Fast-path audio handler — runs on WebSocket callback thread, skips main queue entirely.
+    private func processAudioMessage(_ text: String) {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let base64 = json["data"] as? String,
+              let audioData = Data(base64Encoded: base64) else { return }
+
+        audioChunkCount += 1
+        if audioChunkCount % 50 == 1 {
+            print("SwiftGeminiBridge: Audio chunk #\(audioChunkCount), \(audioData.count) bytes, engine=\(audioEngine?.isRunning ?? false), player=\(playerNode?.isPlaying ?? false)")
+        }
+        playPcmAudio(audioData)
+    }
+
     private func processServerMessage(_ text: String) {
         guard let callback = callback else { return }
         guard let data = text.data(using: .utf8),
@@ -293,15 +377,15 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
         switch type {
         case "audio":
-            // Base64-encoded PCM audio
+            // Base64-encoded PCM audio from server (24kHz 16-bit mono)
             if let base64 = json["data"] as? String,
                let audioData = Data(base64Encoded: base64) {
                 audioChunkCount += 1
                 if audioChunkCount % 50 == 1 {
                     print("SwiftGeminiBridge: Audio chunk #\(audioChunkCount), \(audioData.count) bytes, engine=\(audioEngine?.isRunning ?? false), player=\(playerNode?.isPlaying ?? false)")
                 }
+                // Play immediately — playPcmAudio dispatches to audio queue internally
                 playPcmAudio(audioData)
-                callback.onAudio(pcmData: audioData.toKotlinByteArray())
             }
 
         case "transcript":
@@ -322,13 +406,18 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
         case "tool_result":
             let name = json["name"] as? String ?? ""
-            let success = json["success"] as? Bool ?? false
+            // success may be at top level OR nested inside "result" object
+            let success = (json["success"] as? Bool)
+                ?? ((json["result"] as? [String: Any])?["success"] as? Bool)
+                ?? false
             print("SwiftGeminiBridge: tool_result: \(name), success=\(success)")
+            callback.onToolResult(name: name, success: success)
 
         case "turn_complete":
             turnCount += 1
             print("SwiftGeminiBridge: Turn \(turnCount) complete, \(audioChunkCount) total audio chunks so far")
             audioChunkCount = 0
+            flushPendingAudio()
             callback.onTurnComplete()
 
         case "onboarding_complete":
@@ -348,7 +437,16 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             callback.onError(message: message)
 
         case "interrupted":
-            playerNode?.reset()
+            // Clear buffered audio so stale data doesn't play after interruption.
+            // Guard playerNode.reset() — node may have been detached from engine
+            // (e.g. after config change or disconnect), and calling it crashes with
+            // '_engine != nil' assertion.
+            audioQueue.async { [weak self] in
+                self?.pendingAudioData.removeAll()
+            }
+            if let engine = audioEngine, engine.isRunning, let player = playerNode {
+                player.reset()
+            }
             callback.onInterrupted()
 
         case "game_event":
@@ -381,20 +479,54 @@ class SwiftGeminiBridge: NativeGeminiBridge {
     // MARK: - Audio Playback
 
     private func playPcmAudio(_ data: Data) {
-        guard let player = playerNode, let format = playbackFormat else { return }
+        audioQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.pendingAudioData.append(data)
 
-        let frameCount = data.count / 2
-        guard frameCount > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))
+            // Flush when we've accumulated enough (~200ms) for smooth playback
+            if self.pendingAudioData.count >= self.audioFlushThreshold {
+                self.flushAudioBuffer()
+            }
+        }
+    }
+
+    /// Flush any remaining audio (called on turn_complete / interrupted)
+    private func flushPendingAudio() {
+        audioQueue.async { [weak self] in
+            guard let self = self, !self.pendingAudioData.isEmpty else { return }
+            self.flushAudioBuffer()
+        }
+    }
+
+    /// Actually schedule accumulated PCM data on the player node. Must be called on audioQueue.
+    private func flushAudioBuffer() {
+        guard let engine = audioEngine, let player = playerNode, let format = playbackFormat else {
+            pendingAudioData.removeAll()
+            return
+        }
+        // Don't touch nodes if engine was torn down
+        guard engine.isRunning || isAudioSetup else {
+            pendingAudioData.removeAll()
+            return
+        }
+
+        let pcmData = pendingAudioData
+        pendingAudioData = Data()
+
+        let frameCount = pcmData.count / 2  // 16-bit = 2 bytes per sample
+        guard frameCount > 0 else { return }
+
+        // Convert Int16 PCM → Float32 for clean sample-rate conversion
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))
         else { return }
         buffer.frameLength = AVAudioFrameCount(frameCount)
 
-        if let channelData = buffer.int16ChannelData {
-            data.withUnsafeBytes { rawBuffer in
-                let src = rawBuffer.bindMemory(to: Int16.self)
-                for i in 0..<frameCount {
-                    channelData[0][i] = src[i]
-                }
+        guard let floatData = buffer.floatChannelData else { return }
+        pcmData.withUnsafeBytes { rawBuffer in
+            let src = rawBuffer.bindMemory(to: Int16.self)
+            let scale: Float = 1.0 / 32768.0
+            for i in 0..<frameCount {
+                floatData[0][i] = Float(src[i]) * scale
             }
         }
 
@@ -412,6 +544,41 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             player.play()
         }
         player.scheduleBuffer(buffer, completionHandler: nil)
+    }
+
+    // MARK: - Music Playback (Lyria — 48kHz stereo 16-bit PCM)
+
+    private func playMusicAudio(_ data: Data) {
+        audioQueue.async { [weak self] in
+            guard let self = self,
+                  let player = self.musicPlayerNode,
+                  let format = self.musicPlaybackFormat else { return }
+
+            // 48kHz stereo 16-bit = 4 bytes per frame (2 channels × 2 bytes)
+            let frameCount = data.count / 4
+            guard frameCount > 0 else { return }
+
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))
+            else { return }
+            buffer.frameLength = AVAudioFrameCount(frameCount)
+
+            guard let floatL = buffer.floatChannelData?[0],
+                  let floatR = buffer.floatChannelData?[1] else { return }
+
+            data.withUnsafeBytes { rawBuffer in
+                let src = rawBuffer.bindMemory(to: Int16.self)
+                let scale: Float = 1.0 / 32768.0
+                for i in 0..<frameCount {
+                    floatL[i] = Float(src[i * 2]) * scale
+                    floatR[i] = Float(src[i * 2 + 1]) * scale
+                }
+            }
+
+            if !player.isPlaying {
+                player.play()
+            }
+            player.scheduleBuffer(buffer, completionHandler: nil)
+        }
     }
 
     // MARK: - Audio Recording
@@ -490,15 +657,21 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
     func close() {
         disconnect()
-        playerNode?.stop()
-        audioEngine?.stop()
+        // Stop engine first — nodes must be stopped while engine owns them,
+        // otherwise calling stop() on a detached node crashes with '_engine != nil'.
+        if let engine = audioEngine {
+            engine.stop()
+        }
         audioEngine = nil
         playerNode = nil
+        musicPlayerNode = nil
+        musicPlaybackFormat = nil
         audioConverter = nil
         isAudioSetup = false
         isRecording = false
         callback = nil
         currentSessionId = nil
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - WebSocket Helpers

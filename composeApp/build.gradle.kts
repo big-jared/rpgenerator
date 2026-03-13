@@ -1,4 +1,17 @@
+import com.codingfeline.buildkonfig.compiler.FieldSpec.Type.STRING
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+// Read a key from env var, falling back to .env.local at project root
+fun envOrLocal(key: String, default: String = ""): String {
+    return System.getenv(key) ?: run {
+        val envFile = rootProject.file(".env.local")
+        if (envFile.exists()) {
+            envFile.readLines()
+                .firstOrNull { it.startsWith("$key=") }
+                ?.substringAfter("=")?.trim()
+        } else null
+    } ?: default
+}
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -7,6 +20,7 @@ plugins {
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
+    alias(libs.plugins.buildkonfig)
 }
 
 kotlin {
@@ -38,9 +52,6 @@ kotlin {
             implementation(libs.androidx.credentials)
             implementation(libs.androidx.credentials.play)
             implementation(libs.google.id)
-
-            // Gemini SDK for direct Live API connection
-            implementation("com.google.genai:google-genai:1.41.0")
         }
         iosMain.dependencies {
             // Ktor Client - iOS engine
@@ -97,16 +108,7 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
-        // Read from env var first, fall back to .env.local at project root
-        val apiKey = System.getenv("GOOGLE_API_KEY") ?: run {
-            val envFile = rootProject.file(".env.local")
-            if (envFile.exists()) {
-                envFile.readLines()
-                    .firstOrNull { it.startsWith("GOOGLE_API_KEY=") }
-                    ?.substringAfter("=")?.trim()
-            } else null
-        } ?: ""
-        buildConfigField("String", "GOOGLE_API_KEY", "\"$apiKey\"")
+        // BuildKonfig handles cross-platform config — no Android-only fields needed
     }
     packaging {
         resources {
@@ -123,6 +125,14 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+buildkonfig {
+    packageName = "org.bigboyapps.rngenerator"
+
+    defaultConfigs {
+        buildConfigField(STRING, "SERVER_URL", envOrLocal("SERVER_URL", "https://rpgenerator-yumkcfwfba-uc.a.run.app"))
     }
 }
 

@@ -121,6 +121,34 @@ fun SignInScreen(viewModel: GameViewModel) {
                 }
             }
 
+            // Dev mode: skip sign-in when server has no auth (local/HTTP)
+            if (org.bigboyapps.rngenerator.BuildKonfig.SERVER_URL.startsWith("http://")) {
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.onSignInComplete(
+                            name = "Dev Player",
+                            email = "dev@localhost",
+                            idToken = ""
+                        )
+                    },
+                    border = BorderStroke(1.dp, AppColors.divider),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.6f),
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.height(48.dp).widthIn(min = 200.dp)
+                ) {
+                    Text(
+                        "Skip Sign-In (Dev)",
+                        style = TextStyle(
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+            }
+
             uiState.errorMessage?.let { error ->
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(

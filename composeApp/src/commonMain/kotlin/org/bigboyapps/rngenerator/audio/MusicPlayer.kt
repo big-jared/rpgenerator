@@ -2,12 +2,13 @@ package org.bigboyapps.rngenerator.audio
 
 /**
  * Platform-specific ambient music player.
- * Plays looping background music tracks and crossfades between moods.
+ * Streams PCM audio from the Lyria music generation service.
  *
- * Supported moods: "peaceful", "tense", "battle", "mysterious"
+ * Audio format: 48kHz stereo 16-bit PCM (from server via WebSocket).
  */
 expect class MusicPlayer() {
-    fun setMood(mood: String)
+    /** Enqueue a chunk of 48kHz stereo 16-bit PCM audio for playback. */
+    fun enqueueChunk(pcmData: ByteArray)
     fun setVolume(volume: Float)
     fun release()
 }

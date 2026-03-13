@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
  */
 sealed class ServerMessage {
     data class Audio(val data: ByteArray) : ServerMessage()
+    data class MusicAudio(val data: ByteArray) : ServerMessage()
     data class Text(val content: String) : ServerMessage()
     data class Transcript(val role: String, val content: String) : ServerMessage()
     data class ToolCall(val name: String, val args: JsonObject) : ServerMessage()
@@ -20,6 +21,7 @@ sealed class ServerMessage {
     data object Interrupted : ServerMessage()
     data object Disconnected : ServerMessage()
     data class Error(val message: String) : ServerMessage()
+    data class OnboardingComplete(val seedId: String, val playerName: String, val backstory: String) : ServerMessage()
 }
 
 /**
@@ -62,31 +64,6 @@ data class ToolExecutionResult(
 )
 
 /**
- * Response from GET /api/game/{sessionId}/setup
- */
-@Serializable
-data class GameSetupResponse(
-    val systemPrompt: String,
-    val toolDefinitions: List<ToolDefinitionDto> = emptyList(),
-    val voiceName: String? = null
-)
-
-@Serializable
-data class ToolDefinitionDto(
-    val name: String,
-    val description: String,
-    val parameters: List<ToolParameterDto> = emptyList()
-)
-
-@Serializable
-data class ToolParameterDto(
-    val name: String,
-    val type: String,
-    val description: String,
-    val required: Boolean = true
-)
-
-/**
  * Response from GET /api/game/{sessionId}/npc/{npcId}
  */
 @Serializable
@@ -122,6 +99,18 @@ data class ShopItemDto(
 data class ConversationDto(
     val playerInput: String,
     val npcResponse: String
+)
+
+/**
+ * A saved game entry from GET /api/saves
+ */
+@Serializable
+data class SavedGameInfo(
+    val gameId: String,
+    val playerName: String = "Unknown",
+    val systemType: String = "SYSTEM_INTEGRATION",
+    val level: Int = 1,
+    val lastPlayed: Long = 0
 )
 
 /**

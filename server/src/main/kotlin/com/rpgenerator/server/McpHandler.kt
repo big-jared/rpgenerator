@@ -310,7 +310,7 @@ object McpHandler {
                     mapOf("questId" to ToolParam("string", "Quest ID", required = true)), listOf("questId"))
                 addMCPTool("game_complete_quest", "Complete a quest",
                     mapOf("questId" to ToolParam("string", "Quest ID", required = true)), listOf("questId"))
-                addMCPTool("game_generate_scene_art", "Generate scene artwork using Imagen AI. Returns base64-encoded PNG image.",
+                addMCPTool("game_generate_scene_art", "Generate scene artwork using Gemini's native image generation. Returns base64-encoded image.",
                     mapOf(
                         "sceneDescription" to ToolParam("string", "Scene to depict", required = true),
                         "mood" to ToolParam("string", "Atmosphere: tense, serene, epic, mysterious, foreboding, etc."),
@@ -330,13 +330,13 @@ object McpHandler {
                         "role" to ToolParam("string", "NPC role", required = true),
                         "personality" to ToolParam("string", "NPC personality", required = true)
                     ), listOf("name", "role", "personality"))
-                addMCPTool("game_generate_item_art", "Generate an item illustration using Imagen AI. Returns base64-encoded PNG image.",
+                addMCPTool("game_generate_item_art", "Generate an item illustration using Gemini's native image generation. Returns base64-encoded image.",
                     mapOf(
                         "itemName" to ToolParam("string", "Item name", required = true),
                         "itemDescription" to ToolParam("string", "Item description", required = true),
                         "rarity" to ToolParam("string", "Item rarity: COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, MYTHIC")
                     ), listOf("itemName", "itemDescription"))
-                addMCPTool("game_generate_portrait", "Generate the character's avatar portrait using Imagen AI (optional). Uses appearance from set_character. Can be called again to regenerate.",
+                addMCPTool("game_generate_portrait", "Generate the character's avatar portrait using Gemini's native image generation (optional). Uses appearance from set_character. Can be called again to regenerate.",
                     mapOf(
                         "characterName" to ToolParam("string", "Character name", required = true),
                         "appearance" to ToolParam("string", "Physical appearance description"),

@@ -109,11 +109,15 @@ class BridgedGeminiConnection : OnboardingConnection {
         }
     }
 
-    override fun startReceptionistSession(prompt: String) {
+    override fun configure(serverUrl: String) {
+        bridge.configure(serverUrl)
+    }
+
+    override fun startReceptionistSession(prompt: String, authToken: String?) {
         isReceptionistMode = true
         pendingOnboardingResult = null
         _connectionState.value = GameWebSocketClient.ConnectionState.CONNECTING
-        // Configure server URL if not already set (receptionist uses same server)
+        bridge.setAuthToken(authToken ?: "")
         bridge.startReceptionistSession(prompt, "[]", "Kore", callback)
     }
 

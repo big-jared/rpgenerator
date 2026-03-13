@@ -14,7 +14,6 @@ import io.ktor.websocket.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import com.rpgenerator.core.api.CharacterCreationOptions
-import com.rpgenerator.core.api.ToolDefinition
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -35,13 +34,6 @@ data class CreateGameRequest(
 data class ToolExecutionRequest(
     val name: String,
     val args: Map<String, String> = emptyMap()
-)
-
-@kotlinx.serialization.Serializable
-data class GameSetupResponse(
-    val systemPrompt: String,
-    val toolDefinitions: List<ToolDefinition>,
-    val voiceName: String? = null
 )
 
 @kotlinx.serialization.Serializable
@@ -300,7 +292,7 @@ fun main() {
                 call.respond(stateWithIcons)
             }
 
-            // Execute a tool on a game session (for client-side Gemini)
+            // Execute a tool on a game session
             post("/api/game/{sessionId}/tool") {
                 if (authEnabled && AuthHandler.verifyRequest(call) == null) {
                     call.respond(HttpStatusCode.Unauthorized)
@@ -413,28 +405,6 @@ fun main() {
                 ))
             }
 
-            // Get system prompt + tool definitions for client-side Gemini setup
-            get("/api/game/{sessionId}/setup") {
-                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
-                    call.respond(HttpStatusCode.Unauthorized)
-                    return@get
-                }
-                val sessionId = call.parameters["sessionId"]
-                    ?: return@get call.respond(HttpStatusCode.BadRequest)
-                val session = GameSessionManager.getSession(sessionId)
-                    ?: return@get call.respond(HttpStatusCode.NotFound)
-
-                val prompt = session.game.getSystemPrompt()
-                val tools = session.game.getToolDefinitions()
-                val voice = session.game.getCompanionVoice()
-                val response = GameSetupResponse(
-                    systemPrompt = prompt,
-                    toolDefinitions = tools,
-                    voiceName = voice
-                )
-                call.respond(response)
-            }
-
             // Get NPC details
             get("/api/game/{sessionId}/npc/{npcId}") {
                 if (authEnabled && AuthHandler.verifyRequest(call) == null) {
@@ -463,6 +433,81 @@ fun main() {
                 val icon = session.itemIcons[itemId]
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 call.respondBytes(icon.first, ContentType.parse(icon.second))
+            }
+
+            // List all saved games (scan DB files)
+            get("/api/saves") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@get
+                }
+                val dataDir = SessionStore.getDataDir()
+                val saves = java.io.File(dataDir).listFiles { f -> f.name.startsWith("rpg_") && f.name.endsWith(".db") }
+                    ?.mapNotNull { file ->
+                        val gameId = file.nameWithoutExtension.removePrefix("rpg_")
+                        try {
+                            val driver = com.rpgenerator.core.persistence.DriverFactory(file.absolutePath).createDriver()
+                            val client = com.rpgenerator.core.api.RPGClient(driver)
+                            val games = client.getGames()
+                            client.close()
+                            games.firstOrNull()?.let { info ->
+                                JsonObject(mapOf(
+                                    "gameId" to JsonPrimitive(gameId),
+                                    "playerName" to JsonPrimitive(info.playerName),
+                                    "systemType" to JsonPrimitive(info.systemType.name),
+                                    "level" to JsonPrimitive(info.level),
+                                    "lastPlayed" to JsonPrimitive(file.lastModified())
+                                ))
+                            }
+                        } catch (_: Exception) { null }
+                    }
+                    ?.sortedByDescending { it["lastPlayed"]?.let { v -> (v as? JsonPrimitive)?.content?.toLongOrNull() } ?: 0L }
+                    ?: emptyList()
+                call.respondText(
+                    Json.encodeToString(kotlinx.serialization.builtins.ListSerializer(JsonObject.serializer()), saves),
+                    ContentType.Application.Json
+                )
+            }
+
+            // Load (resume) a saved game by gameId → returns a new session ID
+            post("/api/game/load") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@post
+                }
+                val body = call.receiveText()
+                val parsed = Json.decodeFromString<JsonObject>(body)
+                val gameId = parsed["gameId"]?.let { (it as? JsonPrimitive)?.content }
+                    ?: return@post call.respond(HttpStatusCode.BadRequest)
+                val persisted = PersistedSession(
+                    gameId = gameId,
+                    gameStarted = true,
+                    gameCreated = true
+                )
+                val session = GameSessionManager.resumeSession(persisted)
+                    ?: return@post call.respondText(
+                        """{"error": "Save not found"}""",
+                        ContentType.Application.Json,
+                        HttpStatusCode.NotFound
+                    )
+                call.respondText(
+                    """{"sessionId": "${session.id}"}""",
+                    ContentType.Application.Json
+                )
+            }
+
+            // Save current game state
+            post("/api/game/{sessionId}/save") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@post
+                }
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@post call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@post call.respond(HttpStatusCode.NotFound)
+                session.game.save()
+                call.respondText("""{"success": true}""", ContentType.Application.Json)
             }
 
             // ── Internal: Ephemeral MCP bridge for CliProcessLLM tool calls ──
@@ -516,6 +561,14 @@ fun main() {
 
             // WebSocket for receptionist onboarding — no game engine needed
             webSocket("/ws/receptionist") {
+                if (authEnabled) {
+                    val token = call.request.queryParameters["token"]
+                        ?: call.request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")?.trim()
+                    if (token == null || !AuthHandler.isValidToken(token)) {
+                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Unauthorized"))
+                        return@webSocket
+                    }
+                }
                 ReceptionistWebSocketHandler.handle(this)
             }
 

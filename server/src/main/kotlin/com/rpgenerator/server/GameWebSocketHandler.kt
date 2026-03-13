@@ -4,6 +4,8 @@ import com.rpgenerator.core.api.GameEvent
 import com.rpgenerator.core.api.GameStateSnapshot
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import java.util.Base64
@@ -13,21 +15,9 @@ import com.google.genai.types.LiveServerMessage
 /**
  * Handles WebSocket communication between the mobile app and Gemini Live API.
  *
- * Protocol (client → server):
- *   {"type": "connect", "voiceName": "Kore"}
- *   {"type": "audio", "data": "<base64 PCM 16kHz>"}
- *   {"type": "text", "content": "I look around"}
- *   {"type": "disconnect"}
- *
- * Protocol (server → client):
- *   {"type": "audio", "data": "<base64 PCM 24kHz>"}
- *   {"type": "text", "content": "narrator text"}
- *   {"type": "transcript", "role": "user|model", "content": "transcribed text"}
- *   {"type": "tool_call", "name": "attack_target", "args": {...}}
- *   {"type": "tool_result", "name": "attack_target", "result": {...}}
- *   {"type": "turn_complete"}
- *   {"type": "error", "message": "..."}
- *   {"type": "connected"}
+ * Audio gating: only gate on toolCallPending (Gemini rejects input while
+ * waiting for tool responses). The Live API handles interruptions natively —
+ * no modelSpeaking or audioMuted gates needed.
  */
 object GameWebSocketHandler {
 
@@ -57,7 +47,6 @@ object GameWebSocketHandler {
                     }
                     is Frame.Binary -> {
                         if (session.toolCallPending) continue
-                        // Raw PCM audio bytes (alternative to base64)
                         val gemini = session.geminiSession ?: continue
                         val params = LiveSendRealtimeInputParameters.builder()
                             .media(Blob.builder().mimeType("audio/pcm").data(frame.data))
@@ -84,10 +73,43 @@ object GameWebSocketHandler {
 
             val gemini = session.geminiSession!!
 
-            // Set up message handler — forward Gemini outputs to mobile app
+            // Serialize all Gemini callbacks through a channel to preserve message ordering.
+            val messageChannel = Channel<LiveServerMessage>(Channel.UNLIMITED)
+
+            session.scope.launch {
+                for (msg in messageChannel) {
+                    handleGeminiMessage(ws, session, msg)
+                }
+            }
+
             gemini.receive { message ->
-                session.scope.launch {
-                    handleGeminiMessage(ws, session, message)
+                // Only gate on tool calls — Gemini rejects input during tool execution
+                if (message.toolCall().isPresent) {
+                    session.toolCallPending = true
+                }
+                messageChannel.trySend(message)
+            }
+
+            // Start Lyria music streaming
+            val apiKey = System.getenv("GOOGLE_API_KEY") ?: ""
+            if (apiKey.isNotEmpty()) {
+                try {
+                    val musicChannel = Channel<ByteArray>(Channel.UNLIMITED)
+                    session.scope.launch {
+                        for (chunk in musicChannel) {
+                            try {
+                                ws.send(Frame.Binary(true, byteArrayOf(0x02) + chunk))
+                            } catch (_: Exception) { break }
+                        }
+                    }
+                    val music = LyriaMusicService(apiKey) { chunk ->
+                        musicChannel.trySend(chunk)
+                    }
+                    session.lyriaMusicService = music
+                    music.connect()
+                    music.setMood("peaceful")
+                } catch (e: Exception) {
+                    println("GameWSHandler: Lyria music failed to start: ${e.message}")
                 }
             }
 
@@ -129,74 +151,92 @@ object GameWebSocketHandler {
         session: GameSession,
         message: LiveServerMessage
     ) {
-        // Handle tool calls — gate audio IMMEDIATELY before launching handler
-        message.toolCall().ifPresent { toolCall ->
+        val hasToolCall = message.toolCall().isPresent
+        val hasTurnComplete = message.serverContent().orElse(null)?.turnComplete()?.orElse(false) ?: false
+        if (hasToolCall || hasTurnComplete) {
+            println("GameWSHandler: Gemini message — toolCall=$hasToolCall turnComplete=$hasTurnComplete")
+        }
+
+        // Handle tool calls
+        val toolCall = message.toolCall().orElse(null)
+        if (toolCall != null) {
+            val funcNames = toolCall.functionCalls().orElse(emptyList()).mapNotNull { it.name().orElse(null) }
+            println("GameWSHandler: TOOL CALL received: $funcNames")
             session.toolCallPending = true
-            session.scope.launch {
-                try {
-                    handleToolCall(ws, session, toolCall)
-                } finally {
-                    session.toolCallPending = false
-                }
+            try {
+                handleToolCall(ws, session, toolCall)
+            } finally {
+                session.toolCallPending = false
             }
         }
 
         // Handle server content (text + audio)
-        message.serverContent().ifPresent { content ->
-            if (content.interrupted().orElse(false)) {
-                session.audioMuted = true
-                session.scope.launch { ws.send("""{"type": "interrupted"}""") }
-                return@ifPresent
-            }
+        val content = message.serverContent().orElse(null) ?: return
 
-            content.modelTurn().ifPresent { modelTurn ->
-                // New model turn — unmute audio
-                session.audioMuted = false
-                modelTurn.parts().ifPresent { parts ->
-                    for (part in parts) {
-                        // Text
-                        part.text().ifPresent { text ->
-                            session.scope.launch {
-                                ws.send("""{"type": "text", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))}}""")
-                            }
-                        }
+        if (content.interrupted().orElse(false)) {
+            ws.send("""{"type": "interrupted"}""")
+        }
 
-                        // Audio — base64 JSON (drop if muted from interruption)
-                        if (!session.audioMuted) {
-                            part.inlineData().ifPresent { blob ->
-                                blob.data().ifPresent { audioBytes ->
-                                    val b64 = Base64.getEncoder().encodeToString(audioBytes)
-                                    session.scope.launch {
-                                        ws.send("""{"type": "audio", "data": "$b64"}""")
-                                    }
-                                }
-                            }
-                        }
+        val modelTurn = content.modelTurn().orElse(null)
+        if (modelTurn != null) {
+            val parts = modelTurn.parts().orElse(emptyList())
+            for (part in parts) {
+                val text = part.text().orElse(null)
+                if (text != null) {
+                    val cleaned = text.replace(Regex("<ctrl\\d+>"), "").trim()
+                    if (cleaned.isNotEmpty() && !cleaned.startsWith("**")) {
+                        ws.send("""{"type": "text", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(cleaned))}}""")
                     }
                 }
-            }
 
-            // Input transcription (what the user said)
-            content.inputTranscription().ifPresent { transcript ->
-                transcript.text().ifPresent { text ->
-                    session.scope.launch {
-                        ws.send("""{"type": "transcript", "role": "user", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))}}""")
-                    }
+                val audioBytes = part.inlineData().orElse(null)?.data()?.orElse(null)
+                if (audioBytes != null) {
+                    ws.send(Frame.Binary(true, audioBytes))
                 }
             }
+        }
 
-            // Output transcription (what the model said)
-            content.outputTranscription().ifPresent { transcript ->
-                transcript.text().ifPresent { text ->
-                    session.scope.launch {
-                        ws.send("""{"type": "transcript", "role": "model", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))}}""")
-                    }
+        // Cancel silence watchdog when model is producing output
+        if (modelTurn != null || content.outputTranscription().isPresent) {
+            session.awaitingModelResponse = false
+            session.watchdogJob?.cancel()
+        }
+
+        // Input transcription
+        val inputText = content.inputTranscription().orElse(null)?.text()?.orElse(null)
+        if (inputText != null) {
+            ws.send("""{"type": "transcript", "role": "user", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(inputText))}}""")
+            // Start silence watchdog — nudge model if it doesn't respond within 8s
+            session.awaitingModelResponse = true
+            session.watchdogJob?.cancel()
+            session.watchdogJob = session.scope.launch {
+                kotlinx.coroutines.delay(8000)
+                if (session.awaitingModelResponse && !session.toolCallPending) {
+                    println("GameWSHandler: Model silent for 8s after user input, sending nudge")
+                    val nudge = "[SYSTEM: The player is waiting for your response. Please respond with spoken audio now.]"
+                    val params = LiveSendClientContentParameters.builder()
+                        .turnComplete(false)
+                        .turns(Content.builder()
+                            .role("user")
+                            .parts(listOf(Part.builder().text(nudge).build()))
+                            .build())
+                        .build()
+                    session.geminiSession?.sendClientContent(params)
                 }
             }
+        }
 
-            if (content.turnComplete().orElse(false)) {
-                session.scope.launch { ws.send("""{"type": "turn_complete"}""") }
+        // Output transcription
+        val outputText = content.outputTranscription().orElse(null)?.text()?.orElse(null)
+        if (outputText != null) {
+            val cleaned = outputText.replace(Regex("<ctrl\\d+>"), "").trim()
+            if (cleaned.isNotEmpty()) {
+                ws.send("""{"type": "transcript", "role": "model", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(cleaned))}}""")
             }
+        }
+
+        if (content.turnComplete().orElse(false)) {
+            ws.send("""{"type": "turn_complete"}""")
         }
     }
 
@@ -213,67 +253,83 @@ object GameWebSocketHandler {
             val id = fc.id().orElse(name)
             val args = fc.args().orElse(emptyMap())
 
-            // Notify client of tool call
             ws.send("""{"type": "tool_call", "name": "$name", "args": ${json.encodeToString(JsonObject.serializer(), buildJsonObject {
                 args.forEach { (k, v) -> put(k, JsonPrimitive(v.toString())) }
             })}}""")
 
-            // Convert args to Map<String, Any?>
-            val argsMap: Map<String, Any?> = args.mapValues { (_, value) ->
-                when (value) {
-                    is String -> value
-                    is Number -> value
-                    is Boolean -> value
-                    else -> value.toString()
-                }
-            }
+            val resultData: JsonObject = try {
+                if (name == "send_player_input") {
+                    val input = args["input"]?.toString() ?: ""
+                    val events = session.game.processInput(input).toList()
 
-            // Execute through real game engine
-            val result = session.game.executeTool(name, argsMap)
+                    for (event in events) {
+                        val eventJson = json.encodeToString(GameEvent.serializer(), event)
+                        ws.send("""{"type": "game_event", "event": $eventJson}""")
+                    }
 
-            // Send game events to client
-            for (event in result.events) {
-                val eventJson = json.encodeToString(GameEvent.serializer(), event)
-                ws.send("""{"type": "game_event", "event": $eventJson}""")
-            }
-
-            // Send tool result to client
-            ws.send("""{"type": "tool_result", "name": "$name", "success": ${result.success}}""")
-
-            // If this was a mutating tool, push state update
-            if (result.events.isNotEmpty()) {
-                try {
-                    val stateSnapshot = session.game.getState()
-                    val stateJson = json.encodeToString(GameStateSnapshot.serializer(), stateSnapshot)
-                    ws.send("""{"type": "state_update", "state": $stateJson}""")
-                } catch (_: Exception) { /* best-effort */ }
-            }
-
-            // Handle scene art generation
-            if (name == "generate_scene_art") {
-                session.scope.launch {
                     try {
-                        val description = argsMap["description"]?.toString() ?: ""
-                        val state = session.game.getState()
-                        val imgResult = session.imageService.generateSceneArt(
-                            SceneArtRequest(
-                                locationName = state.location,
-                                description = description
-                            )
-                        )
-                        if (imgResult is ImageResult.Success) {
-                            val b64 = Base64.getEncoder().encodeToString(imgResult.imageData)
-                            ws.send("""{"type": "scene_image", "data": "$b64", "mimeType": "${imgResult.mimeType}"}""")
-                        }
-                    } catch (_: Exception) { /* best-effort image gen */ }
-                }
-            }
+                        val stateSnapshot = session.game.getState()
+                        val stateJson = json.encodeToString(GameStateSnapshot.serializer(), stateSnapshot)
+                        ws.send("""{"type": "state_update", "state": $stateJson}""")
+                    } catch (_: Exception) {}
 
-            // Build response for Gemini
-            val resultData = buildJsonObject {
-                put("success", JsonPrimitive(result.success))
-                result.data.let { put("data", it) }
-                result.error?.let { put("error", JsonPrimitive(it)) }
+                    // Build human-readable summary for Gemini (not raw JSON)
+                    val narrative = buildList {
+                        for (event in events) {
+                            when (event) {
+                                is GameEvent.NarratorText -> add(event.text)
+                                is GameEvent.NPCDialogue -> add("${event.npcName} says: ${event.text}")
+                                is GameEvent.SystemNotification -> add("[System] ${event.text}")
+                                is GameEvent.CombatLog -> add("[Combat] ${event.text}")
+                                is GameEvent.StatChange -> add("${event.statName}: ${event.oldValue} → ${event.newValue}")
+                                is GameEvent.ItemGained -> add("Gained item: ${event.itemName} x${event.quantity}")
+                                is GameEvent.QuestUpdate -> add("Quest '${event.questName}': ${event.status}")
+                                else -> {} // skip binary events (images, audio)
+                            }
+                        }
+                    }.joinToString("\n")
+
+                    buildJsonObject {
+                        put("success", JsonPrimitive(true))
+                        put("narrative", JsonPrimitive(narrative.ifEmpty { "Action processed." }))
+                    }
+                } else {
+                    val argsMap: Map<String, Any?> = args.mapValues { (_, value) ->
+                        when (value) {
+                            is String -> value
+                            is Number -> value
+                            is Boolean -> value
+                            else -> value.toString()
+                        }
+                    }
+
+                    val result = session.game.executeTool(name, argsMap)
+
+                    for (event in result.events) {
+                        val eventJson = json.encodeToString(GameEvent.serializer(), event)
+                        ws.send("""{"type": "game_event", "event": $eventJson}""")
+                    }
+
+                    ws.send("""{"type": "tool_result", "name": "$name", "success": ${result.success}}""")
+
+                    if (name == "shift_music_mood") {
+                        val mood = argsMap["mood"]?.toString() ?: "peaceful"
+                        session.lyriaMusicService?.setMood(mood)
+                    }
+
+                    buildJsonObject {
+                        put("success", JsonPrimitive(result.success))
+                        result.data.let { put("data", it) }
+                        result.error?.let { put("error", JsonPrimitive(it)) }
+                    }
+                }
+            } catch (e: Exception) {
+                println("GameWSHandler: Tool '$name' failed: ${e.message}")
+                e.printStackTrace()
+                buildJsonObject {
+                    put("success", JsonPrimitive(false))
+                    put("error", JsonPrimitive(e.message ?: "Unknown error"))
+                }
             }
 
             responses.add(
@@ -285,12 +341,17 @@ object GameWebSocketHandler {
             )
         }
 
-        // Send results back to Gemini
         if (responses.isNotEmpty()) {
+            val responseNames = responses.mapNotNull { it.name().orElse(null) }
+            println("GameWSHandler: Sending ${responses.size} tool response(s) back to Gemini: $responseNames")
             val params = LiveSendToolResponseParameters.builder()
                 .functionResponses(responses)
                 .build()
-            session.geminiSession?.sendToolResponse(params)
+            try {
+                session.geminiSession?.sendToolResponse(params)
+            } catch (e: Exception) {
+                println("GameWSHandler: Failed to send tool response to Gemini: ${e.message}")
+            }
         }
     }
 }

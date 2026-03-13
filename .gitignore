@@ -69,6 +69,7 @@ node_modules/
 # Environment / secrets
 .env
 .env.*
+!.env.local.template
 *.pem
 
 # Claude Code local config

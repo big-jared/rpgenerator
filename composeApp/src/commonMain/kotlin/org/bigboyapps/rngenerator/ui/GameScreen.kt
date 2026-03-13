@@ -10,8 +10,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,7 +27,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -42,6 +39,8 @@ import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import org.bigboyapps.rngenerator.network.GameWebSocketClient
 
 @Composable
@@ -89,13 +88,10 @@ fun GameScreen(viewModel: GameViewModel) {
         ControlBar(
             isListening = uiState.isListening,
             isGeminiSpeaking = uiState.isGeminiSpeaking,
-            showTextInput = uiState.showTextInput,
-            textInput = uiState.textInput,
+            isMusicEnabled = uiState.isMusicEnabled,
             onMicPressed = viewModel::onMicPressed,
             onMenuPressed = { showMenu = true },
-            onToggleTextInput = viewModel::onToggleTextInput,
-            onTextInputChanged = viewModel::onTextInputChanged,
-            onTextInputSubmit = viewModel::onTextInputSubmit,
+            onMusicToggle = viewModel::toggleMusic,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
@@ -144,6 +140,7 @@ fun GameScreen(viewModel: GameViewModel) {
             inventory = uiState.inventory,
             quests = uiState.quests,
             npcsHere = uiState.npcsHere,
+            playerAvatarBytes = uiState.playerAvatarBytes,
             onNpcClick = { npcId -> viewModel.selectNpc(npcId) },
             onDismiss = { showHud = false },
             initialTab = hudInitialTab
@@ -202,6 +199,8 @@ private fun FeedItemView(item: FeedItem) {
         is FeedItem.CompanionAside -> CompanionAsideBubble(item)
         is FeedItem.CombatStart -> CombatEncounterCard(item)
         is FeedItem.CombatEnd -> CombatEndCard(item)
+        is FeedItem.CombatAction -> CombatActionLine(item)
+        is FeedItem.LocationChange -> LocationChangeHeader(item)
     }
 }
 
@@ -516,6 +515,86 @@ private fun CombatEndCard(item: FeedItem.CombatEnd) {
                 .background(bgColor, RoundedCornerShape(6.dp))
                 .border(1.dp, textColor.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
                 .padding(vertical = 12.dp, horizontal = 16.dp)
+        )
+    }
+}
+
+// ── Combat Action Line ──────────────────────────────────────────
+
+@Composable
+private fun CombatActionLine(item: FeedItem.CombatAction) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Sword icon
+        SwordIcon(size = 12.dp, color = AppColors.hpRed.copy(alpha = 0.7f))
+        Text(
+            text = item.text,
+            style = MaterialTheme.typography.bodySmall.copy(
+                color = AppColors.inkMedium,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+        )
+    }
+}
+
+// ── Location Change Header ──────────────────────────────────────
+
+@Composable
+private fun LocationChangeHeader(item: FeedItem.LocationChange) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // Ornamental divider line
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(1.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(Color.Transparent, AppColors.bronze.copy(alpha = 0.6f))
+                        )
+                    )
+            )
+            // Compass/map icon
+            Box(modifier = Modifier.padding(horizontal = 12.dp)) {
+                MapIcon(size = 16.dp, color = AppColors.bronze)
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(1.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(AppColors.bronze.copy(alpha = 0.6f), Color.Transparent)
+                        )
+                    )
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = item.locationName,
+            style = MaterialTheme.typography.titleMedium.copy(
+                color = AppColors.bronze,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            ),
+            textAlign = TextAlign.Center
         )
     }
 }
@@ -992,7 +1071,7 @@ private fun BracketNotification(content: @Composable () -> Unit) {
 // ── Reconnecting Overlay ─────────────────────────────────────────
 
 @Composable
-private fun ReconnectingOverlay() {
+internal fun ReconnectingOverlay() {
     Box(
         modifier = Modifier.fillMaxSize().background(AppColors.overlay),
         contentAlignment = Alignment.Center
@@ -1044,6 +1123,23 @@ private fun MenuSheet(
     }
 }
 
+/**
+ * Menu content without ModalBottomSheet wrapper — for previews.
+ */
+@Composable
+internal fun MenuContent(onOpenHud: (HudTab) -> Unit = {}) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AppColors.parchment)
+            .padding(bottom = 32.dp)
+    ) {
+        MenuItem(icon = Icons.Default.Person, label = "Character", onClick = { onOpenHud(HudTab.CHARACTER) })
+        MenuItem(icon = Icons.Default.Inventory2, label = "Inventory", onClick = { onOpenHud(HudTab.INVENTORY) })
+        MenuItem(icon = Icons.Default.Assignment, label = "Quests", onClick = { onOpenHud(HudTab.QUESTS) })
+    }
+}
+
 @Composable
 private fun MenuItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -1076,16 +1172,13 @@ private fun MenuItem(
 // ── Control Bar ──────────────────────────────────────────────────
 
 @Composable
-private fun ControlBar(
+internal fun ControlBar(
     isListening: Boolean,
     isGeminiSpeaking: Boolean,
-    showTextInput: Boolean,
-    textInput: String,
+    isMusicEnabled: Boolean,
     onMicPressed: () -> Unit,
     onMenuPressed: () -> Unit,
-    onToggleTextInput: () -> Unit,
-    onTextInputChanged: (String) -> Unit,
-    onTextInputSubmit: () -> Unit,
+    onMusicToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -1111,51 +1204,12 @@ private fun ControlBar(
                 .background(AppColors.parchmentEdge.copy(alpha = 0.5f))
         )
 
-        // Text input (expandable)
-        AnimatedVisibility(visible = showTextInput) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = textInput,
-                    onValueChange = onTextInputChanged,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Aa...", color = AppColors.inkMuted) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { onTextInputSubmit() }),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = AppColors.inkDark,
-                        unfocusedTextColor = AppColors.inkMedium,
-                        focusedBorderColor = AppColors.parchmentEdge,
-                        unfocusedBorderColor = AppColors.parchmentEdge.copy(alpha = 0.5f),
-                        cursorColor = AppColors.bronze,
-                        focusedContainerColor = AppColors.parchmentLight,
-                        unfocusedContainerColor = AppColors.parchmentLight
-                    ),
-                    shape = RoundedCornerShape(6.dp)
-                )
-            }
-        }
-
         // Button row
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Text toggle
-            TextButton(onClick = onToggleTextInput) {
-                Text(
-                    text = "Aa",
-                    color = AppColors.inkFaded,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
 
             // Session button — shows listening state, tap to stop
             val ringColor = when {
@@ -1214,6 +1268,15 @@ private fun ControlBar(
                         )
                     }
                 }
+            }
+
+            // Music toggle
+            IconButton(onClick = onMusicToggle) {
+                Icon(
+                    imageVector = if (isMusicEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                    contentDescription = if (isMusicEnabled) "Mute Music" else "Unmute Music",
+                    tint = if (isMusicEnabled) AppColors.bronze else AppColors.inkFaded
+                )
             }
 
             // Menu button

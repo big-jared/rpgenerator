@@ -1,5 +1,6 @@
 package org.bigboyapps.rngenerator.service
 
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.bigboyapps.rngenerator.network.GameWebSocketClient
@@ -9,7 +10,8 @@ import org.bigboyapps.rngenerator.ui.OnboardingResult
 
 /**
  * GameConnection backed by GameSessionService.
- * The service keeps the Gemini Live connection + audio alive when the app is backgrounded.
+ * The service keeps a foreground notification so mic stays active when backgrounded.
+ * All Gemini communication goes through the server WebSocket.
  */
 class ServiceGameConnection(
     private val service: GameSessionService
@@ -20,10 +22,14 @@ class ServiceGameConnection(
 
     override val onboardingComplete: SharedFlow<OnboardingResult>
         get() = service.connection?.onboardingComplete
-            ?: kotlinx.coroutines.flow.MutableSharedFlow()
+            ?: MutableSharedFlow()
 
-    override fun startReceptionistSession(prompt: String) {
-        service.startReceptionistSession(prompt)
+    override fun configure(serverUrl: String) {
+        service.configure(serverUrl)
+    }
+
+    override fun startReceptionistSession(prompt: String, authToken: String?) {
+        service.startReceptionistSession(prompt, authToken)
     }
 
     override fun disconnectSession() {

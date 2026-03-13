@@ -300,9 +300,28 @@ internal class UnifiedToolContractImpl(
                 }
             }
             putJsonObject("equipment") {
-                put("weapon", JsonPrimitive(sheet.equipment.weapon?.name ?: "None"))
-                put("armor", JsonPrimitive(sheet.equipment.armor?.name ?: "None"))
-                put("accessory", JsonPrimitive(sheet.equipment.accessory?.name ?: "None"))
+                putJsonObject("weapon") {
+                    put("name", JsonPrimitive(sheet.equipment.weapon?.name ?: "None"))
+                    sheet.equipment.weapon?.let { w ->
+                        put("baseDamage", JsonPrimitive(w.baseDamage))
+                        put("strengthBonus", JsonPrimitive(w.strengthBonus))
+                        put("dexterityBonus", JsonPrimitive(w.dexterityBonus))
+                    }
+                }
+                putJsonObject("armor") {
+                    put("name", JsonPrimitive(sheet.equipment.armor?.name ?: "None"))
+                    sheet.equipment.armor?.let { a ->
+                        put("defenseBonus", JsonPrimitive(a.defenseBonus))
+                        put("constitutionBonus", JsonPrimitive(a.constitutionBonus))
+                    }
+                }
+                putJsonObject("accessory") {
+                    put("name", JsonPrimitive(sheet.equipment.accessory?.name ?: "None"))
+                    sheet.equipment.accessory?.let { a ->
+                        put("intelligenceBonus", JsonPrimitive(a.intelligenceBonus))
+                        put("wisdomBonus", JsonPrimitive(a.wisdomBonus))
+                    }
+                }
             }
             putJsonArray("statusEffects") {
                 sheet.statusEffects.forEach { effect ->

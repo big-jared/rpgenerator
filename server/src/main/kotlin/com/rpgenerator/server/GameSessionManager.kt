@@ -143,14 +143,18 @@ class GameSession(
     var connected = false
         private set
 
+    /** Lyria RealTime music streaming — created when WebSocket client connects. */
+    var lyriaMusicService: LyriaMusicService? = null
+
     /** Cached item icon images: itemId → (imageBytes, mimeType) */
     val itemIcons = ConcurrentHashMap<String, Pair<ByteArray, String>>()
 
-    /** Gate realtime input while a Gemini tool call is pending (prevents 1008). */
+    /** Gate ALL realtime input while a Gemini tool call is pending (prevents 1008). */
     @Volatile var toolCallPending = false
 
-    /** Drop outgoing audio after interruption until next model turn. */
-    @Volatile var audioMuted = false
+    /** Silence watchdog — nudge model if it goes quiet after user input */
+    @Volatile var awaitingModelResponse = false
+    var watchdogJob: kotlinx.coroutines.Job? = null
 
     /**
      * Connect to Gemini Live API for voice narration.
@@ -159,25 +163,60 @@ class GameSession(
         voiceName: String = "Kore",
         systemPrompt: String? = null
     ) {
-        // Build tool declarations from real game engine
-        val toolDefs = game.getToolDefinitions()
-        val toolDeclarations = toolDefs.map { def ->
+        // Voice companion gets a small curated tool set — NOT the full 56-tool
+        // game engine contract. The companion relays player intent through
+        // send_player_input → orchestrator/GM, which handles all game mechanics.
+        // Query tools let the companion answer quick questions without a full
+        // orchestrator round-trip. Keeping this small prevents 1008 errors on
+        // the native audio model.
+        val toolDeclarations = listOf(
             FunctionDeclaration.builder()
-                .name(def.name)
-                .description(def.description)
+                .name("send_player_input")
+                .description("Send the player's action or dialogue to the game engine. The game master will handle combat, movement, NPC interaction, quests, and everything else. Returns narrative events describing what happened. Use this for ANY player action.")
                 .parameters(Schema.builder()
-                    .type("OBJECT")
-                    .properties(def.parameters.associate { param ->
-                        param.name to Schema.builder()
-                            .type(param.type.uppercase())
-                            .description(param.description)
+                    .type(Type.Known.OBJECT)
+                    .properties(mapOf(
+                        "input" to Schema.builder()
+                            .type(Type.Known.STRING)
+                            .description("What the player said or wants to do, in natural language")
                             .build()
-                    })
-                    .required(def.parameters.filter { it.required }.map { it.name })
+                    ))
+                    .required(listOf("input"))
+                    .build()
+                )
+                .build(),
+            FunctionDeclaration.builder()
+                .name("get_player_stats")
+                .description("Get the player's current stats: level, HP, XP, mana, energy, location, and class.")
+                .build(),
+            FunctionDeclaration.builder()
+                .name("get_inventory")
+                .description("Get the player's inventory items and capacity.")
+                .build(),
+            FunctionDeclaration.builder()
+                .name("get_active_quests")
+                .description("Get all active quests and their progress.")
+                .build(),
+            FunctionDeclaration.builder()
+                .name("get_location")
+                .description("Get current location details, features, and connections to other areas.")
+                .build(),
+            FunctionDeclaration.builder()
+                .name("shift_music_mood")
+                .description("Change the background music mood to match the scene.")
+                .parameters(Schema.builder()
+                    .type(Type.Known.OBJECT)
+                    .properties(mapOf(
+                        "mood" to Schema.builder()
+                            .type(Type.Known.STRING)
+                            .description("Mood: peaceful, tense, battle, victory, mysterious, dark, epic")
+                            .build()
+                    ))
+                    .required(listOf("mood"))
                     .build()
                 )
                 .build()
-        }
+        )
 
         val prompt = systemPrompt ?: game.getSystemPrompt()
 
@@ -213,8 +252,11 @@ class GameSession(
     }
 
     fun disconnect() {
+        watchdogJob?.cancel()
         geminiSession?.close()
         geminiSession = null
+        lyriaMusicService?.close()
+        lyriaMusicService = null
         connected = false
     }
 

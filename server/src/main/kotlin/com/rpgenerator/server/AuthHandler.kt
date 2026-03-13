@@ -3,6 +3,11 @@ package com.rpgenerator.server
 import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
+import com.google.auth.oauth2.GoogleCredentials
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseToken
 import io.ktor.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
@@ -35,6 +40,40 @@ object AuthHandler {
         GoogleIdTokenVerifier.Builder(NetHttpTransport(), GsonFactory.getDefaultInstance())
             .setAudience(listOf(googleClientId))
             .build()
+    }
+
+    // Firebase Admin SDK — initialized once, uses Application Default Credentials on Cloud Run
+    private val firebaseAuth: FirebaseAuth? by lazy {
+        try {
+            if (FirebaseApp.getApps().isEmpty()) {
+                FirebaseApp.initializeApp(FirebaseOptions.builder()
+                    .setCredentials(GoogleCredentials.getApplicationDefault())
+                    .setProjectId(System.getenv("GOOGLE_CLOUD_PROJECT") ?: "rpgenerator-f89d6")
+                    .build())
+            }
+            FirebaseAuth.getInstance()
+        } catch (e: Exception) {
+            println("AuthHandler: Firebase Admin SDK init failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Verify a token as a Firebase ID token. Returns user info or null.
+     */
+    private fun verifyFirebaseToken(token: String): AuthenticatedUser? {
+        return try {
+            val decoded: FirebaseToken = firebaseAuth?.verifyIdToken(token) ?: return null
+            AuthenticatedUser(
+                email = decoded.email ?: "",
+                name = decoded.name ?: decoded.email ?: "",
+                pictureUrl = decoded.picture,
+                googleId = decoded.uid,
+                token = token
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // Bearer token → authenticated user
@@ -310,11 +349,35 @@ object AuthHandler {
         val authHeader = call.request.header(HttpHeaders.Authorization) ?: return null
         if (!authHeader.startsWith("Bearer ", ignoreCase = true)) return null
         val token = authHeader.removePrefix("Bearer ").removePrefix("bearer ").trim()
-        return sessions[token]
+
+        // Check in-memory sessions first (tokens from /auth/token exchange)
+        sessions[token]?.let { return it }
+
+        // Try verifying as a raw Google ID token
+        try {
+            val idToken = googleVerifier.verify(token)
+            if (idToken != null) {
+                val payload = idToken.payload
+                return AuthenticatedUser(
+                    email = payload.email,
+                    name = (payload["name"] as? String) ?: payload.email,
+                    pictureUrl = payload["picture"] as? String,
+                    googleId = payload.subject,
+                    token = token
+                )
+            }
+        } catch (_: Exception) {}
+
+        // Try verifying as a Firebase ID token (mobile apps send these)
+        return verifyFirebaseToken(token)
     }
 
     fun isValidToken(token: String): Boolean {
-        return sessions.containsKey(token)
+        if (sessions.containsKey(token)) return true
+        // Try Google ID token
+        try { if (googleVerifier.verify(token) != null) return true } catch (_: Exception) {}
+        // Try Firebase ID token
+        return verifyFirebaseToken(token) != null
     }
 
     fun isEnabled(): Boolean {

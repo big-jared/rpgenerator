@@ -3,7 +3,7 @@ package org.bigboyapps.rngenerator.audio
 /**
  * Platform-agnostic Gemini Live API bridge.
  * Swift (iOS) implements this as a WebSocket client to the server.
- * Android ignores this — it uses GeminiLiveConnection directly.
+ * Android uses DirectGameConnection → server WebSocket (server owns Gemini session).
  */
 interface GeminiMessageCallback {
     fun onAudio(pcmData: ByteArray)
@@ -25,6 +25,7 @@ interface GeminiMessageCallback {
 interface NativeGeminiBridge {
     fun configure(serverUrl: String)
     fun setSessionId(sessionId: String)
+    fun setAuthToken(token: String)
     fun startReceptionistSession(prompt: String, toolsJson: String, voiceName: String, callback: GeminiMessageCallback)
     fun startGameSession(systemPrompt: String, toolsJson: String, voiceName: String, callback: GeminiMessageCallback)
     fun sendToolResponse(id: String, name: String, responseJson: String)

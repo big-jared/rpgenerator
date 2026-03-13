@@ -8,6 +8,7 @@ plugins {
     alias(libs.plugins.composeCompiler) apply false
     alias(libs.plugins.sqldelight) apply false
     alias(libs.plugins.google.services) apply false
+    alias(libs.plugins.buildkonfig) apply false
 }
 
 allprojects {

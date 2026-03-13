@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.ImageBitmap
 import coil3.compose.AsyncImage
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -49,6 +50,7 @@ fun HudPanel(
     inventory: List<InventoryItemUi>,
     quests: List<QuestUi>,
     npcsHere: List<NpcUi>,
+    playerAvatarBytes: ByteArray? = null,
     onNpcClick: (String) -> Unit,
     onDismiss: () -> Unit,
     initialTab: HudTab = HudTab.CHARACTER
@@ -92,7 +94,7 @@ fun HudPanel(
 
                 // Tab content
                 when (activeTab) {
-                    HudTab.CHARACTER -> CharacterTab(stats, fullSheet, npcsHere, onNpcClick)
+                    HudTab.CHARACTER -> CharacterTab(stats, fullSheet, npcsHere, onNpcClick, playerAvatarBytes)
                     HudTab.INVENTORY -> InventoryTab(inventory)
                     HudTab.QUESTS -> QuestsTab(quests)
                 }
@@ -198,7 +200,7 @@ internal fun QuestsPreviewContent(quests: List<QuestUi>) = QuestsTab(quests)
 // ── Character Tab ────────────────────────────────────────────────
 
 @Composable
-private fun CharacterTab(stats: PlayerStatsUi?, fullSheet: FullCharacterSheetUi?, npcsHere: List<NpcUi>, onNpcClick: (String) -> Unit) {
+private fun CharacterTab(stats: PlayerStatsUi?, fullSheet: FullCharacterSheetUi?, npcsHere: List<NpcUi>, onNpcClick: (String) -> Unit, playerAvatarBytes: ByteArray? = null) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
         contentPadding = PaddingValues(vertical = 16.dp),
@@ -240,12 +242,22 @@ private fun CharacterTab(stats: PlayerStatsUi?, fullSheet: FullCharacterSheetUi?
                                 .background(AppColors.parchmentDark),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = stats.name.take(1).uppercase(),
-                                style = MaterialTheme.typography.headlineLarge.copy(
-                                    color = AppColors.bronze
+                            val avatarBitmap = playerAvatarBytes?.let { remember(it) { decodeImageBytes(it) } }
+                            if (avatarBitmap != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = avatarBitmap,
+                                    contentDescription = "${stats.name} portrait",
+                                    modifier = Modifier.fillMaxSize().clip(CircleShape),
+                                    contentScale = ContentScale.Crop
                                 )
-                            )
+                            } else {
+                                Text(
+                                    text = stats.name.take(1).uppercase(),
+                                    style = MaterialTheme.typography.headlineLarge.copy(
+                                        color = AppColors.bronze
+                                    )
+                                )
+                            }
                         }
                     }
 
@@ -368,9 +380,9 @@ private fun CharacterTab(stats: PlayerStatsUi?, fullSheet: FullCharacterSheetUi?
                     }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            if (eq.weapon != "None") EquipmentRow("Weapon", eq.weapon)
-                            if (eq.armor != "None") EquipmentRow("Armor", eq.armor)
-                            if (eq.accessory != "None") EquipmentRow("Accessory", eq.accessory)
+                            if (eq.weapon != "None") EquipmentRow("Weapon", eq.weapon, eq.weaponStats)
+                            if (eq.armor != "None") EquipmentRow("Armor", eq.armor, eq.armorStats)
+                            if (eq.accessory != "None") EquipmentRow("Accessory", eq.accessory, eq.accessoryStats)
                         }
                     }
                 }
@@ -439,26 +451,41 @@ private fun CharacterTab(stats: PlayerStatsUi?, fullSheet: FullCharacterSheetUi?
 }
 
 @Composable
-private fun EquipmentRow(slot: String, name: String) {
-    Row(
+private fun EquipmentRow(slot: String, name: String, stats: String? = null) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(AppColors.parchmentDark.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
-        Text(
-            text = slot,
-            style = MaterialTheme.typography.labelMedium.copy(color = AppColors.inkFaded)
-        )
-        Text(
-            text = name,
-            style = MaterialTheme.typography.bodyMedium.copy(
-                color = AppColors.inkDark,
-                fontWeight = FontWeight.Bold
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = slot,
+                style = MaterialTheme.typography.labelMedium.copy(color = AppColors.inkFaded)
             )
-        )
+            Text(
+                text = name,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = AppColors.inkDark,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+        }
+        if (stats != null) {
+            Text(
+                text = stats,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = AppColors.bronze,
+                    fontSize = 10.sp,
+                    letterSpacing = 0.5.sp
+                ),
+                modifier = Modifier.align(Alignment.End)
+            )
+        }
     }
 }
 

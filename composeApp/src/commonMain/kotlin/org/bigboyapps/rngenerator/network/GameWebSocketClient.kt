@@ -66,7 +66,14 @@ class GameWebSocketClient(
                                         if (msg != null) _messages.emit(msg)
                                     }
                                     is Frame.Binary -> {
-                                        _messages.emit(ServerMessage.Audio(frame.data))
+                                        val data = frame.data
+                                        if (data.size > 1) {
+                                            when (data[0]) {
+                                                0x01.toByte() -> _messages.emit(ServerMessage.Audio(data.copyOfRange(1, data.size)))
+                                                0x02.toByte() -> _messages.emit(ServerMessage.MusicAudio(data.copyOfRange(1, data.size)))
+                                                else -> _messages.emit(ServerMessage.Audio(data)) // legacy fallback
+                                            }
+                                        }
                                     }
                                     else -> {}
                                 }
@@ -91,6 +98,64 @@ class GameWebSocketClient(
             session = null
             _connectionState.value = ConnectionState.DISCONNECTED
             _messages.emit(ServerMessage.Disconnected)
+        }
+    }
+
+    /**
+     * Connect to the receptionist WebSocket for onboarding.
+     */
+    suspend fun connectReceptionist(prompt: String, voiceName: String, scope: CoroutineScope) {
+        disconnect()
+        _connectionState.value = ConnectionState.CONNECTING
+
+        connectionJob = scope.launch {
+            try {
+                val wsUrl = serverUrl
+                    .replace("https://", "wss://")
+                    .replace("http://", "ws://")
+
+                client.webSocket("$wsUrl/ws/receptionist") {
+                    session = this
+                    _connectionState.value = ConnectionState.CONNECTED
+
+                    // Send connect with prompt
+                    val escaped = prompt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+                    send("""{"type": "connect", "voiceName": "$voiceName", "prompt": "$escaped"}""")
+
+                    try {
+                        for (frame in incoming) {
+                            when (frame) {
+                                is Frame.Text -> {
+                                    val msg = parseMessage(frame.readText())
+                                    if (msg != null) _messages.emit(msg)
+                                }
+                                is Frame.Binary -> {
+                                    val data = frame.data
+                                    if (data.size > 1) {
+                                        when (data[0]) {
+                                            0x01.toByte() -> _messages.emit(ServerMessage.Audio(data.copyOfRange(1, data.size)))
+                                            0x02.toByte() -> _messages.emit(ServerMessage.MusicAudio(data.copyOfRange(1, data.size)))
+                                            else -> _messages.emit(ServerMessage.Audio(data))
+                                        }
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        _messages.emit(ServerMessage.Error("Connection lost: ${e.message}"))
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.emit(ServerMessage.Error("Failed to connect: ${e.message}"))
+            }
+
+            session = null
+            _connectionState.value = ConnectionState.DISCONNECTED
         }
     }
 
@@ -175,6 +240,12 @@ class GameWebSocketClient(
                 "state_update" -> {
                     val state = obj["state"]?.jsonObject ?: return null
                     ServerMessage.StateUpdate(state)
+                }
+                "onboarding_complete" -> {
+                    val seedId = obj["seedId"]?.jsonPrimitive?.content ?: "integration"
+                    val playerName = obj["playerName"]?.jsonPrimitive?.content ?: "Adventurer"
+                    val backstory = obj["backstory"]?.jsonPrimitive?.content ?: ""
+                    ServerMessage.OnboardingComplete(seedId, playerName, backstory)
                 }
                 "turn_complete" -> ServerMessage.TurnComplete
                 "connected" -> ServerMessage.Connected

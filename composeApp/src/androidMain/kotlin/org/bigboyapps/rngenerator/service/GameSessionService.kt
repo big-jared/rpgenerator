@@ -12,16 +12,14 @@ import android.os.Build
 import android.os.IBinder
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import org.bigboyapps.rngenerator.BuildConfig
 import org.bigboyapps.rngenerator.MainActivity
-import org.bigboyapps.rngenerator.gemini.GeminiLiveConnection
-import org.bigboyapps.rngenerator.network.GameApiClient
 import org.bigboyapps.rngenerator.network.GameWebSocketClient
 import org.bigboyapps.rngenerator.network.ServerMessage
+import org.bigboyapps.rngenerator.ui.DirectGameConnection
 
 /**
- * Foreground service that keeps the Gemini Live connection and audio pipeline alive
- * when the app is in the background.
+ * Foreground service that keeps the microphone permission alive when backgrounded.
+ * All Gemini communication goes through the server WebSocket via [DirectGameConnection].
  */
 class GameSessionService : Service() {
 
@@ -31,11 +29,9 @@ class GameSessionService : Service() {
 
     private val binder = LocalBinder()
 
-    // Owned connection — direct to Gemini
-    var connection: GeminiLiveConnection? = null
+    var connection: DirectGameConnection? = null
         private set
 
-    // Expose messages to ViewModel
     private val _messages = MutableSharedFlow<ServerMessage>(extraBufferCapacity = 64)
     val messages: SharedFlow<ServerMessage> = _messages.asSharedFlow()
 
@@ -51,29 +47,20 @@ class GameSessionService : Service() {
         createNotificationChannel()
     }
 
-    /**
-     * Create a GeminiLiveConnection and wire up forwarding.
-     * Called by both startSession and startReceptionistSession.
-     */
-    private fun ensureConnection(): GeminiLiveConnection {
+    private fun ensureConnection(): DirectGameConnection {
         connection?.let { return it }
 
-        val apiKey = BuildConfig.GOOGLE_API_KEY
-        val apiClient = GameApiClient("") // placeholder — receptionist doesn't need server
-        val conn = GeminiLiveConnection(apiClient, apiKey)
+        val conn = DirectGameConnection()
         connection = conn
 
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         forwardScope = scope
 
-        // Forward connection state
         scope.launch {
             conn.connectionState.collect { state ->
                 _connectionState.value = state
             }
         }
-
-        // Forward server messages
         scope.launch {
             conn.messages.collect { msg ->
                 _messages.emit(msg)
@@ -83,39 +70,18 @@ class GameSessionService : Service() {
         return conn
     }
 
-    fun startReceptionistSession(prompt: String) {
+    fun configure(serverUrl: String) {
+        ensureConnection().configure(serverUrl)
+    }
+
+    fun startReceptionistSession(prompt: String, authToken: String? = null) {
         startForegroundWithNotification()
-        val conn = ensureConnection()
-        conn.startReceptionistSession(prompt)
+        ensureConnection().startReceptionistSession(prompt, authToken)
     }
 
     fun startSession(serverUrl: String, sessionId: String) {
         startForegroundWithNotification()
-
-        // If we already have a connection from receptionist phase, reuse the apiClient
-        if (connection == null) {
-            val apiClient = GameApiClient(serverUrl)
-            val apiKey = BuildConfig.GOOGLE_API_KEY
-            val conn = GeminiLiveConnection(apiClient, apiKey)
-            connection = conn
-
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-            forwardScope = scope
-
-            scope.launch {
-                conn.connectionState.collect { state ->
-                    _connectionState.value = state
-                }
-            }
-            scope.launch {
-                conn.messages.collect { msg ->
-                    _messages.emit(msg)
-                }
-            }
-        }
-
-        // Start the Gemini Live connection
-        connection!!.startSession(serverUrl, sessionId)
+        ensureConnection().startSession(serverUrl, sessionId)
     }
 
     suspend fun sendConnect(voiceName: String = "Kore") {
@@ -172,9 +138,6 @@ class GameSessionService : Service() {
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
-    /**
-     * Disconnect and tear down the current session without destroying the service.
-     */
     fun teardown() {
         connection?.close()
         connection = null

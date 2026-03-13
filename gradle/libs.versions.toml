@@ -43,6 +43,9 @@ coil = "3.1.0"
 # Logging
 kermit = "2.0.4"
 
+# Build Config
+buildkonfig = "0.15.2"
+
 # Testing
 junit = "4.13.2"
 turbine = "1.2.1"
@@ -132,3 +135,6 @@ sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }
 
 # Google
 google-services = { id = "com.google.gms.google-services", version.ref = "google-services" }
+
+# Build Config
+buildkonfig = { id = "com.codingfeline.buildkonfig", version.ref = "buildkonfig" }

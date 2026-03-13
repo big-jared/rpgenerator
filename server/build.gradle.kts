@@ -24,6 +24,9 @@ dependencies {
     // Google ID token verification
     implementation("com.google.api-client:google-api-client:2.7.2")
 
+    // Firebase Admin SDK (verify Firebase ID tokens from mobile app)
+    implementation("com.google.firebase:firebase-admin:9.4.3")
+
     // SLF4J
     implementation("org.slf4j:slf4j-simple:2.0.9")
 }
@@ -39,6 +42,9 @@ tasks.register<Jar>("fatJar") {
     manifest {
         attributes["Main-Class"] = "com.rpgenerator.server.MainKt"
     }
-    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    // Project classes FIRST so they aren't excluded by dependency duplicates
     with(tasks.jar.get() as CopySpec)
+    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) }) {
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+    }
 }

@@ -9,6 +9,7 @@ import io.ktor.websocket.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import java.util.Base64
@@ -25,12 +26,12 @@ import java.util.Base64
  *
  * Protocol (client -> server):
  *   {"type": "connect", "voiceName": "Kore", "prompt": "<system prompt>"}
- *   {"type": "audio", "data": "<base64 PCM 16kHz>"}
+ *   Binary frame: raw PCM 16kHz 16-bit mono
  *   {"type": "text", "content": "..."}
  *   {"type": "disconnect"}
  *
  * Protocol (server -> client):
- *   {"type": "audio", "data": "<base64 PCM 24kHz>"}
+ *   Binary frame: raw PCM 24kHz 16-bit mono (audio)
  *   {"type": "text", "content": "..."}
  *   {"type": "transcript", "role": "user|model", "content": "..."}
  *   {"type": "tool_call", "name": "...", "args": {...}}
@@ -58,10 +59,10 @@ object ReceptionistWebSocketHandler {
             .description("Set the player's character name once they have chosen one.")
             .parameters(
                 Schema.builder()
-                    .type("OBJECT")
+                    .type(Type.Known.OBJECT)
                     .properties(mapOf(
                         "name" to Schema.builder()
-                            .type("STRING")
+                            .type(Type.Known.STRING)
                             .description("The player's chosen character name")
                             .build()
                     ))
@@ -74,10 +75,10 @@ object ReceptionistWebSocketHandler {
             .description("Set the player's backstory once they have described it or confirmed one.")
             .parameters(
                 Schema.builder()
-                    .type("OBJECT")
+                    .type(Type.Known.OBJECT)
                     .properties(mapOf(
                         "backstory" to Schema.builder()
-                            .type("STRING")
+                            .type(Type.Known.STRING)
                             .description("A short backstory for the player's character")
                             .build()
                     ))
@@ -90,10 +91,10 @@ object ReceptionistWebSocketHandler {
             .description("Select which world/adventure the player wants to play.")
             .parameters(
                 Schema.builder()
-                    .type("OBJECT")
+                    .type(Type.Known.OBJECT)
                     .properties(mapOf(
                         "seed_id" to Schema.builder()
-                            .type("STRING")
+                            .type(Type.Known.STRING)
                             .description("The world seed ID: integration, tabletop, crawler, or quiet_life")
                             .build()
                     ))
@@ -104,36 +105,41 @@ object ReceptionistWebSocketHandler {
         FunctionDeclaration.builder()
             .name("finish_onboarding")
             .description("Complete the onboarding process. Call this once the player has a name, backstory, and world selected.")
-            .parameters(
-                Schema.builder()
-                    .type("OBJECT")
-                    .properties(emptyMap())
-                    .build()
-            )
+            // No .parameters() — SDK docs: "For function with no parameters, this can be left unset."
             .build()
     )
 
     /** Per-connection mutable state. */
     private class ReceptionistSession {
         @Volatile var toolCallPending = false
-        @Volatile var audioMuted = false
         @Volatile var seedId: String? = null
         @Volatile var playerName: String? = null
         @Volatile var backstory: String? = null
         @Volatile var onboardingDone = false
         var geminiSession: GeminiAsyncSession? = null
+        var lyriaMusicService: LyriaMusicService? = null
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-        /** True if we have enough data to proceed even without finish_onboarding. */
-        fun hasAllData() = playerName != null
+        /** Collect user speech per turn to extract name/backstory if model doesn't call tools. */
+        val userSpeechPerTurn = mutableListOf<String>()
+        val currentTurnUserSpeech = StringBuilder()
 
         /** Number of turns completed — used to auto-complete after enough conversation. */
         var turnCount = 0
-        var audioChunkCount = 0
+        var audioChunkCount = 0      // cumulative debug counter
+        var turnAudioChunks = 0      // per-turn counter, reset on turnComplete
+
+        /** Silence watchdog — nudge model if it goes quiet after user input */
+        @Volatile var lastUserInputTime = 0L
+        @Volatile var awaitingModelResponse = false
+        var watchdogJob: kotlinx.coroutines.Job? = null
 
         fun disconnect() {
+            watchdogJob?.cancel()
             geminiSession?.close()
             geminiSession = null
+            lyriaMusicService?.close()
+            lyriaMusicService = null
         }
     }
 
@@ -209,11 +215,52 @@ object ReceptionistWebSocketHandler {
                 .outputAudioTranscription(AudioTranscriptionConfig.builder().build())
                 .build()
 
+            val toolNames = toolDeclarations.mapNotNull { it.name().orElse(null) }
+            println("ReceptionistWSHandler: Connecting to Gemini Live with ${toolDeclarations.size} tools: $toolNames, model=$MODEL_ID")
+            println("ReceptionistWSHandler: System prompt (${prompt.length} chars): ${prompt.take(200)}...")
+
             session.geminiSession = geminiClient.async.live.connect(MODEL_ID, config).get()
+            println("ReceptionistWSHandler: Gemini Live session connected successfully")
+
+            // Serialize all Gemini callbacks through a channel to preserve message ordering.
+            // The SDK dispatches receive callbacks across a thread pool — without this,
+            // audio chunks interleave out of order and produce garbled playback.
+            val messageChannel = Channel<LiveServerMessage>(Channel.UNLIMITED)
+
+            session.scope.launch {
+                for (msg in messageChannel) {
+                    handleGeminiMessage(ws, session, msg)
+                }
+            }
 
             session.geminiSession!!.receive { message ->
-                session.scope.launch {
-                    handleGeminiMessage(ws, session, message)
+                // Only gate on tool calls — Gemini rejects input during tool execution
+                if (message.toolCall().isPresent) {
+                    session.toolCallPending = true
+                }
+                messageChannel.trySend(message)
+            }
+
+            // Start Lyria music for onboarding ambiance
+            val apiKey = System.getenv("GOOGLE_API_KEY") ?: ""
+            if (apiKey.isNotEmpty()) {
+                try {
+                    val musicChannel = Channel<ByteArray>(Channel.UNLIMITED)
+                    session.scope.launch {
+                        for (chunk in musicChannel) {
+                            try {
+                                ws.send(Frame.Binary(true, byteArrayOf(0x02) + chunk))
+                            } catch (_: Exception) { break }
+                        }
+                    }
+                    val music = LyriaMusicService(apiKey) { chunk ->
+                        musicChannel.trySend(chunk)
+                    }
+                    session.lyriaMusicService = music
+                    music.connect()
+                    music.setMood("mysterious") // Onboarding mood
+                } catch (e: Exception) {
+                    println("ReceptionistWSHandler: Lyria music failed: ${e.message}")
                 }
             }
 
@@ -255,112 +302,187 @@ object ReceptionistWebSocketHandler {
         session: ReceptionistSession,
         message: LiveServerMessage
     ) {
-        // Handle tool calls — gate audio IMMEDIATELY before launching handler
-        message.toolCall().ifPresent { toolCall ->
+        // Log what Gemini sent — helps debug tool call issues
+        val hasToolCall = message.toolCall().isPresent
+        val hasContent = message.serverContent().isPresent
+        val hasTurnComplete = message.serverContent().orElse(null)?.turnComplete()?.orElse(false) ?: false
+        if (hasToolCall || hasTurnComplete) {
+            println("ReceptionistWSHandler: Gemini message — toolCall=$hasToolCall content=$hasContent turnComplete=$hasTurnComplete")
+        }
+
+        // Handle tool calls — block this serial processor until tool call completes
+        val toolCall = message.toolCall().orElse(null)
+        if (toolCall != null) {
+            val funcNames = toolCall.functionCalls().orElse(emptyList()).mapNotNull { it.name().orElse(null) }
+            println("ReceptionistWSHandler: TOOL CALL received: $funcNames")
             session.toolCallPending = true
-            session.scope.launch {
-                try {
-                    handleToolCall(ws, session, toolCall)
-                } finally {
-                    session.toolCallPending = false
-                }
+            try {
+                handleToolCall(ws, session, toolCall)
+            } finally {
+                session.toolCallPending = false
             }
         }
 
         // Handle server content (text + audio)
-        message.serverContent().ifPresent { content ->
-            if (content.interrupted().orElse(false)) {
-                session.audioMuted = true
-                session.scope.launch { ws.send("""{"type": "interrupted"}""") }
-                return@ifPresent
+        val content = message.serverContent().orElse(null) ?: return
+
+        if (content.interrupted().orElse(false)) {
+            ws.send("""{"type": "interrupted"}""")
+        }
+
+        val modelTurn = content.modelTurn().orElse(null)
+        if (modelTurn != null) {
+            val parts = modelTurn.parts().orElse(emptyList())
+            for (part in parts) {
+                // Text — filter out Gemini thinking/reasoning (starts with **) and control tokens
+                val text = part.text().orElse(null)
+                if (text != null) {
+                    val cleaned = text.replace(Regex("<ctrl\\d+>"), "").trim()
+                    if (cleaned.isNotEmpty() && !cleaned.startsWith("**")) {
+                        ws.send("""{"type": "text", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(cleaned))}}""")
+                    }
+                }
+
+                // Audio — send as raw binary frame (PCM 24kHz 16-bit mono)
+                val blob = part.inlineData().orElse(null)
+                val audioBytes = blob?.data()?.orElse(null)
+                if (audioBytes != null) {
+                    session.turnAudioChunks++
+                    ws.send(Frame.Binary(true, audioBytes))
+                }
+            }
+        }
+
+        // Input transcription (what the user said)
+        val inputText = content.inputTranscription().orElse(null)?.text()?.orElse(null)
+        if (inputText != null) {
+            ws.send("""{"type": "transcript", "role": "user", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(inputText))}}""")
+            // Accumulate user speech for this turn
+            session.currentTurnUserSpeech.append(inputText)
+            // Start silence watchdog — nudge model if it doesn't respond
+            session.lastUserInputTime = System.currentTimeMillis()
+            session.awaitingModelResponse = true
+            session.watchdogJob?.cancel()
+            session.watchdogJob = session.scope.launch {
+                kotlinx.coroutines.delay(8000)
+                if (session.awaitingModelResponse && !session.toolCallPending) {
+                    println("ReceptionistWSHandler: Model silent for 8s after user input, sending nudge")
+                    val nudge = "[SYSTEM: The player is waiting for your response. Please respond with spoken audio now.]"
+                    val params = LiveSendClientContentParameters.builder()
+                        .turnComplete(false)
+                        .turns(Content.builder()
+                            .role("user")
+                            .parts(listOf(Part.builder().text(nudge).build()))
+                            .build())
+                        .build()
+                    session.geminiSession?.sendClientContent(params)
+                }
+            }
+            // Detect world selection from user speech if model didn't call select_world
+            if (session.seedId == null) {
+                val lower = inputText.lowercase()
+                when {
+                    "integration" in lower || "system" in lower || "apocalypse" in lower -> session.seedId = "integration"
+                    "fantasy" in lower || "tabletop" in lower || "sword" in lower -> session.seedId = "tabletop"
+                    "crawler" in lower || "game show" in lower || "tv" in lower -> session.seedId = "crawler"
+                    "quiet" in lower || "farming" in lower || "peaceful" in lower -> session.seedId = "quiet_life"
+                }
+                if (session.seedId != null) {
+                    println("ReceptionistWSHandler: Detected seed from user speech: ${session.seedId}")
+                }
+            }
+        }
+
+        // Cancel silence watchdog when model is producing output
+        if (modelTurn != null || content.outputTranscription().isPresent) {
+            session.awaitingModelResponse = false
+            session.watchdogJob?.cancel()
+        }
+
+        // Output transcription (what the model said)
+        val outputText = content.outputTranscription().orElse(null)?.text()?.orElse(null)
+        if (outputText != null) {
+            val cleaned = outputText.replace(Regex("<ctrl\\d+>"), "").trim()
+            if (cleaned.isNotEmpty()) {
+                ws.send("""{"type": "transcript", "role": "model", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(cleaned))}}""")
+            }
+        }
+
+        if (content.turnComplete().orElse(false)) {
+            // Save user speech from this turn
+            val userSpeech = session.currentTurnUserSpeech.toString().trim()
+            if (userSpeech.isNotEmpty()) {
+                session.userSpeechPerTurn.add(userSpeech)
+                session.currentTurnUserSpeech.clear()
             }
 
-            content.modelTurn().ifPresent { modelTurn ->
-                // New model turn — unmute audio (model is responding fresh)
-                session.audioMuted = false
-                modelTurn.parts().ifPresent { parts ->
-                    for (part in parts) {
-                        val hasText = part.text().isPresent
-                        val hasInline = part.inlineData().isPresent
-                        if (hasText || hasInline) {
-                            session.audioChunkCount++
-                            if (session.audioChunkCount <= 3 || session.audioChunkCount % 100 == 0) {
-                                println("ReceptionistWSHandler: part #${session.audioChunkCount} hasText=$hasText hasInline=$hasInline")
-                            }
-                        }
+            session.turnCount++
+            val turnAudio = session.turnAudioChunks
+            session.turnAudioChunks = 0
+            println("ReceptionistWSHandler: Turn ${session.turnCount} complete, $turnAudio audio chunks this turn, userSpeech=${session.userSpeechPerTurn}")
 
-                        // Text
-                        part.text().ifPresent { text ->
-                            session.scope.launch {
-                                ws.send("""{"type": "text", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))}}""")
-                            }
-                        }
-
-                        // Audio — base64 JSON (drop if muted from interruption)
-                        if (!session.audioMuted) {
-                            part.inlineData().ifPresent { blob ->
-                                blob.data().ifPresent { audioBytes ->
-                                    val b64 = Base64.getEncoder().encodeToString(audioBytes)
-                                    session.scope.launch {
-                                        ws.send("""{"type": "audio", "data": "$b64"}""")
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // Extract name from first user response if model never called set_player_name
+            if (session.playerName == null && session.userSpeechPerTurn.isNotEmpty()) {
+                val firstResponse = session.userSpeechPerTurn[0].trim()
+                    .replace(Regex("[.!?,;:]"), "")  // strip punctuation
+                    .split("\\s+".toRegex())
+                    .filter { it.length > 1 }  // drop single chars
+                val nameWords = firstResponse.filter { it[0].isUpperCase() || firstResponse.size <= 2 }
+                if (nameWords.isNotEmpty()) {
+                    session.playerName = nameWords.takeLast(2).joinToString(" ")
+                    println("ReceptionistWSHandler: Extracted player name from speech: ${session.playerName}")
                 }
             }
 
-            // Input transcription (what the user said)
-            content.inputTranscription().ifPresent { transcript ->
-                transcript.text().ifPresent { text ->
-                    session.scope.launch {
-                        ws.send("""{"type": "transcript", "role": "user", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))}}""")
-                    }
-                    // Detect world selection from user speech if model didn't call select_world
-                    if (session.seedId == null) {
-                        val lower = text.lowercase()
-                        when {
-                            "integration" in lower || "system" in lower || "apocalypse" in lower -> session.seedId = "integration"
-                            "fantasy" in lower || "tabletop" in lower || "sword" in lower -> session.seedId = "tabletop"
-                            "crawler" in lower || "game show" in lower || "tv" in lower -> session.seedId = "crawler"
-                            "quiet" in lower || "farming" in lower || "peaceful" in lower -> session.seedId = "quiet_life"
-                        }
-                        if (session.seedId != null) {
-                            println("ReceptionistWSHandler: Detected seed from user speech: ${session.seedId}")
-                        }
-                    }
+            // Extract backstory from second user response if model never called set_backstory
+            if (session.backstory == null && session.userSpeechPerTurn.size >= 2) {
+                session.backstory = session.userSpeechPerTurn.drop(1)
+                    .joinToString(" ")
+                    .take(500)
+                println("ReceptionistWSHandler: Extracted backstory from speech: ${session.backstory?.take(80)}...")
+            }
+
+            // Nudge: if the model should have called a tool but didn't, remind it
+            if (session.turnCount >= 2 && !session.onboardingDone) {
+                val missingTools = mutableListOf<String>()
+                if (session.playerName == null && session.userSpeechPerTurn.isNotEmpty())
+                    missingTools.add("set_player_name")
+                if (session.backstory == null && session.userSpeechPerTurn.size >= 3)
+                    missingTools.add("set_backstory")
+                if (session.seedId != null && !session.onboardingDone && session.turnCount >= 5)
+                    missingTools.add("finish_onboarding")
+
+                if (missingTools.isNotEmpty()) {
+                    val nudge = "[SYSTEM: You forgot to call your functions. Call ${missingTools.joinToString(", ")} NOW. This is mandatory.]"
+                    println("ReceptionistWSHandler: Sending tool nudge: $nudge")
+                    val params = LiveSendClientContentParameters.builder()
+                        .turnComplete(false)
+                        .turns(
+                            Content.builder()
+                                .role("user")
+                                .parts(listOf(Part.builder().text(nudge).build()))
+                                .build()
+                        )
+                        .build()
+                    session.geminiSession?.sendClientContent(params)
                 }
             }
 
-            // Output transcription (what the model said)
-            content.outputTranscription().ifPresent { transcript ->
-                transcript.text().ifPresent { text ->
-                    session.scope.launch {
-                        ws.send("""{"type": "transcript", "role": "model", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))}}""")
-                    }
+            ws.send("""{"type": "turn_complete"}""")
+            // Safety-net auto-complete after turn 10+
+            if (!session.onboardingDone && session.turnCount >= 10) {
+                val name = session.playerName ?: "Adventurer"
+                val seed = session.seedId ?: "integration"
+                val story = session.backstory ?: ""
+                println("ReceptionistWSHandler: Auto-completing onboarding after turn ${session.turnCount} (name=$name, seed=$seed)")
+                session.onboardingDone = true
+                val completeMsg = buildJsonObject {
+                    put("type", JsonPrimitive("onboarding_complete"))
+                    put("seedId", JsonPrimitive(seed))
+                    put("playerName", JsonPrimitive(name))
+                    put("backstory", JsonPrimitive(story))
                 }
-            }
-
-            if (content.turnComplete().orElse(false)) {
-                session.turnCount++
-                session.scope.launch {
-                    ws.send("""{"type": "turn_complete"}""")
-                    // Fallback: if model collected all data but never called finish_onboarding,
-                    // emit onboarding_complete so the client can proceed.
-                    // After turn 4+, if we have at least a name, auto-complete with defaults.
-                    if (!session.onboardingDone && session.hasAllData() && session.turnCount >= 4) {
-                        println("ReceptionistWSHandler: Auto-completing onboarding after turn ${session.turnCount} (name=${session.playerName}, seed=${session.seedId ?: "integration"})")
-                        session.onboardingDone = true
-                        val completeMsg = buildJsonObject {
-                            put("type", JsonPrimitive("onboarding_complete"))
-                            put("seedId", JsonPrimitive(session.seedId ?: "integration"))
-                            put("playerName", JsonPrimitive(session.playerName ?: "Adventurer"))
-                            put("backstory", JsonPrimitive(session.backstory ?: ""))
-                        }
-                        ws.send(json.encodeToString(JsonObject.serializer(), completeMsg))
-                    }
-                }
+                ws.send(json.encodeToString(JsonObject.serializer(), completeMsg))
             }
         }
     }
@@ -407,9 +529,7 @@ object ReceptionistWebSocketHandler {
                     }
                 }
                 "finish_onboarding" -> {
-                    // Mark that onboarding is done — emit to client after farewell audio plays
                     session.onboardingDone = true
-                    // Send onboarding_complete to client
                     val completeMsg = buildJsonObject {
                         put("type", JsonPrimitive("onboarding_complete"))
                         put("seedId", JsonPrimitive(session.seedId ?: ""))

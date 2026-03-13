@@ -61,4 +61,5 @@ echo "  LLM:      $LLM_PROVIDER ($LLM_MODEL)"
 echo "  Port:     8080"
 echo ""
 
-exec "$PROJECT_ROOT/gradlew" :server:run --console=plain
+cd "$PROJECT_ROOT"
+exec ./gradlew :server:run --console=plain

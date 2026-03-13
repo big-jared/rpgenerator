@@ -3,6 +3,8 @@ package org.bigboyapps.rngenerator.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,9 +19,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.rpgenerator.composeapp.generated.resources.Res
 import com.rpgenerator.composeapp.generated.resources.cinzel_decorative_bold
 import com.rpgenerator.composeapp.generated.resources.lobby_background
+import org.bigboyapps.rngenerator.network.SavedGameInfo
 import org.jetbrains.compose.resources.Font
 import org.jetbrains.compose.resources.painterResource
 
@@ -32,11 +36,21 @@ fun LobbyScreen(viewModel: GameViewModel) {
     LobbyContent(
         errorMessage = uiState.errorMessage,
         onStartNewGame = { viewModel.startNewGame() },
-        onLoadGame = { /* TODO */ },
+        onLoadGame = { viewModel.showLoadGameDialog() },
         onOptions = { /* TODO */ },
         onSignOut = { viewModel.signOut() },
         onDismissError = { viewModel.dismissError() }
     )
+
+    // Load Game dialog
+    if (uiState.showLoadGameDialog) {
+        LoadGameDialog(
+            saves = uiState.savedGames,
+            isLoading = uiState.isLoadingSaves,
+            onSelectSave = { viewModel.loadSavedGame(it.gameId) },
+            onDismiss = { viewModel.dismissLoadGameDialog() }
+        )
+    }
 }
 
 @Composable
@@ -145,6 +159,118 @@ fun LobbyContent(
                 },
                 containerColor = AppColors.hpRed
             ) { Text(error, color = AppColors.parchmentLight) }
+        }
+    }
+}
+
+// ── Load Game Dialog ─────────────────────────────────────────────
+
+@Composable
+private fun LoadGameDialog(
+    saves: List<SavedGameInfo>,
+    isLoading: Boolean,
+    onSelectSave: (SavedGameInfo) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = AppColors.surface,
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 400.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = "Load Game",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        color = AppColors.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = AppColors.bronzeLight)
+                    }
+                } else if (saves.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No saved games found.",
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                color = AppColors.textMuted
+                            ),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(saves) { save ->
+                            SaveGameCard(save = save, onClick = { onSelectSave(save) })
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Cancel", color = AppColors.textMuted)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveGameCard(save: SavedGameInfo, onClick: () -> Unit) {
+    val worldLabel = when (save.systemType) {
+        "SYSTEM_INTEGRATION" -> "System Integration"
+        "HIGH_FANTASY" -> "High Fantasy"
+        "DUNGEON_CRAWLER" -> "Dungeon Crawler"
+        "QUIET_LIFE" -> "Quiet Life"
+        else -> save.systemType
+    }
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        color = AppColors.parchmentLight,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = save.playerName,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = AppColors.inkDark
+                    )
+                )
+                Text(
+                    text = "$worldLabel  -  Level ${save.level}",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = AppColors.inkMuted
+                    )
+                )
+            }
         }
     }
 }

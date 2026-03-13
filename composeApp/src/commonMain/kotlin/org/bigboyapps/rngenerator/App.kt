@@ -42,6 +42,7 @@ sealed interface Route {
     @Serializable data object SignIn : Route
     @Serializable data object Lobby : Route
     @Serializable data object Onboarding : Route
+    @Serializable data object LoadingGame : Route
     @Serializable data object Game : Route
 }
 
@@ -77,6 +78,7 @@ fun App(connectionFactory: (() -> GameConnection)? = null) {
                     Screen.SIGN_IN -> Route.SignIn
                     Screen.LOBBY -> Route.Lobby
                     Screen.ONBOARDING -> Route.Onboarding
+                    Screen.LOADING_GAME -> Route.LoadingGame
                     Screen.GAME -> Route.Game
                 }
                 val currentRoute = navController.currentDestination?.route
@@ -88,7 +90,7 @@ fun App(connectionFactory: (() -> GameConnection)? = null) {
                             popUpTo(0) { inclusive = true }
                         }
                         // These push onto the stack (back gesture pops to previous)
-                        Screen.ONBOARDING, Screen.GAME -> navController.navigate(targetRoute)
+                        Screen.ONBOARDING, Screen.LOADING_GAME, Screen.GAME -> navController.navigate(targetRoute)
                     }
                 }
             }
@@ -113,6 +115,9 @@ fun App(connectionFactory: (() -> GameConnection)? = null) {
                         onDispose { viewModel.stopOnboarding() }
                     }
                     OnboardingScreen(viewModel)
+                }
+                composable<Route.LoadingGame> {
+                    LoadingGameScreen(viewModel)
                 }
                 composable<Route.Game> {
                     GameScreen(viewModel)

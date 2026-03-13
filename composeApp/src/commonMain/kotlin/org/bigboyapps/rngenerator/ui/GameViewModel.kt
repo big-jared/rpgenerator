@@ -14,12 +14,13 @@ import org.bigboyapps.rngenerator.audio.MusicPlayer
 import org.bigboyapps.rngenerator.network.GameApiClient
 import org.bigboyapps.rngenerator.network.GameWebSocketClient
 import org.bigboyapps.rngenerator.network.ServerMessage
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 private val log = Logger.withTag("GameViewModel")
 
 // ── UI State ────────────────────────────────────────────────────
 
-enum class Screen { SIGN_IN, LOBBY, ONBOARDING, GAME }
+enum class Screen { SIGN_IN, LOBBY, ONBOARDING, LOADING_GAME, GAME }
 
 data class GameUiState(
     val screen: Screen = Screen.SIGN_IN,
@@ -33,6 +34,7 @@ data class GameUiState(
     val quests: List<QuestUi> = emptyList(),
     val npcsHere: List<NpcUi> = emptyList(),
     val musicMood: String = "peaceful",
+    val isMusicEnabled: Boolean = true,
     val serverUrl: String = DEFAULT_SERVER_URL,
     val userName: String = "",
     val userEmail: String = "",
@@ -46,7 +48,14 @@ data class GameUiState(
     val combat: CombatUi? = null,
     val selectedNpcDetails: NpcDetailsUi? = null,
     val isLoadingNpcDetails: Boolean = false,
-    val fullCharacterSheet: FullCharacterSheetUi? = null
+    val fullCharacterSheet: FullCharacterSheetUi? = null,
+    val playerAvatarBytes: ByteArray? = null,
+    val currentLocationName: String = "",
+    val loadingSeedId: String? = null,
+    val loadingStatus: String? = null,
+    val savedGames: List<org.bigboyapps.rngenerator.network.SavedGameInfo> = emptyList(),
+    val showLoadGameDialog: Boolean = false,
+    val isLoadingSaves: Boolean = false
 )
 
 data class PlayerStatsUi(
@@ -134,8 +143,11 @@ data class SkillUi(
 
 data class EquipmentUi(
     val weapon: String = "None",
+    val weaponStats: String? = null,
     val armor: String = "None",
-    val accessory: String = "None"
+    val armorStats: String? = null,
+    val accessory: String = "None",
+    val accessoryStats: String? = null
 )
 
 data class StatusEffectUi(
@@ -226,9 +238,15 @@ sealed class FeedItem {
 
     /** Combat ended */
     data class CombatEnd(val enemyName: String, val victory: Boolean) : FeedItem()
+
+    /** Combat action log (attack, damage, skill use) */
+    data class CombatAction(val text: String) : FeedItem()
+
+    /** Location change divider */
+    data class LocationChange(val locationName: String) : FeedItem()
 }
 
-private const val DEFAULT_SERVER_URL = "https://rpgenerator-yumkcfwfba-uc.a.run.app"
+private val DEFAULT_SERVER_URL = org.bigboyapps.rngenerator.BuildKonfig.SERVER_URL
 
 /**
  * Result of the Receptionist onboarding session (platform-independent).
@@ -247,6 +265,7 @@ data class OnboardingResult(
 interface GameConnection {
     val messages: SharedFlow<ServerMessage>
     val connectionState: StateFlow<GameWebSocketClient.ConnectionState>
+    fun configure(serverUrl: String) {}
     fun startSession(serverUrl: String, sessionId: String)
     suspend fun sendConnect(voiceName: String = "Kore")
     suspend fun sendText(text: String)
@@ -260,19 +279,21 @@ interface GameConnection {
 
 /**
  * Extended GameConnection that supports a Receptionist onboarding phase.
- * Implemented by GeminiLiveConnection on Android.
+ * Implemented by DirectGameConnection (Android) and BridgedGeminiConnection (iOS).
  */
 interface OnboardingConnection : GameConnection {
     val onboardingComplete: SharedFlow<OnboardingResult>
-    fun startReceptionistSession(prompt: String)
+    fun startReceptionistSession(prompt: String, authToken: String? = null)
     fun disconnectSession()
 }
 
 /**
- * Default (non-service) implementation for iOS or when service isn't available.
+ * Default connection — works on both Android and iOS via server WebSocket.
+ * Supports both receptionist onboarding and game sessions.
  */
-class DirectGameConnection : GameConnection {
+class DirectGameConnection : OnboardingConnection {
     private var wsClient: GameWebSocketClient? = null
+    private var serverBaseUrl: String? = null
     private val audioRecorder = AudioRecorder()
     private val audioPlayer = AudioPlayer()
     private var scope: CoroutineScope? = null
@@ -283,7 +304,44 @@ class DirectGameConnection : GameConnection {
     private val _connectionState = MutableStateFlow(GameWebSocketClient.ConnectionState.DISCONNECTED)
     override val connectionState: StateFlow<GameWebSocketClient.ConnectionState> = _connectionState.asStateFlow()
 
+    private val _onboardingComplete = MutableSharedFlow<OnboardingResult>(extraBufferCapacity = 1)
+    override val onboardingComplete: SharedFlow<OnboardingResult> = _onboardingComplete.asSharedFlow()
+
+    override fun configure(serverUrl: String) {
+        serverBaseUrl = serverUrl
+    }
+
+    override fun startReceptionistSession(prompt: String, authToken: String?) {
+        val url = serverBaseUrl ?: return
+        val client = GameWebSocketClient(url)
+        wsClient = client
+        val connScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        scope = connScope
+
+        connScope.launch { client.connectionState.collect { _connectionState.value = it } }
+        connScope.launch {
+            client.messages.collect { msg ->
+                // Intercept onboarding_complete and emit on the dedicated flow
+                if (msg is ServerMessage.OnboardingComplete) {
+                    _onboardingComplete.emit(OnboardingResult(
+                        seedId = msg.seedId,
+                        playerName = msg.playerName,
+                        backstory = msg.backstory
+                    ))
+                }
+                _messages.emit(msg)
+            }
+        }
+        connScope.launch { client.connectReceptionist(prompt, "Kore", connScope) }
+    }
+
+    override fun disconnectSession() {
+        wsClient?.disconnect()
+        _connectionState.value = GameWebSocketClient.ConnectionState.DISCONNECTED
+    }
+
     override fun startSession(serverUrl: String, sessionId: String) {
+        serverBaseUrl = serverUrl
         val client = GameWebSocketClient(serverUrl)
         wsClient = client
         val connScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -346,6 +404,8 @@ class GameViewModel(
     private var connection: GameConnection? = null
     private var sessionId: String? = null
     private val musicPlayer = MusicPlayer()
+    private var pendingOnboardingResult: OnboardingResult? = null
+    private var pendingLoadGameId: String? = null
 
     // Streaming narration: accumulate transcript chunks into one feed item per turn
     private var streamingNarrationId: String? = null
@@ -482,10 +542,47 @@ class GameViewModel(
                 } ?: emptyList()
 
                 val equipment = data["equipment"]?.jsonObject?.let { eq ->
+                    val weaponObj = eq["weapon"]?.jsonObject
+                    val armorObj = eq["armor"]?.jsonObject
+                    val accessoryObj = eq["accessory"]?.jsonObject
+
+                    fun buildWeaponStats(obj: kotlinx.serialization.json.JsonObject?): String? {
+                        obj ?: return null
+                        val dmg = obj["baseDamage"]?.jsonPrimitive?.intOrNull ?: return null
+                        val parts = mutableListOf("+$dmg DMG")
+                        val str = obj["strengthBonus"]?.jsonPrimitive?.intOrNull ?: 0
+                        val dex = obj["dexterityBonus"]?.jsonPrimitive?.intOrNull ?: 0
+                        if (str > 0) parts += "+$str STR"
+                        if (dex > 0) parts += "+$dex DEX"
+                        return parts.joinToString("  ")
+                    }
+
+                    fun buildArmorStats(obj: kotlinx.serialization.json.JsonObject?): String? {
+                        obj ?: return null
+                        val def = obj["defenseBonus"]?.jsonPrimitive?.intOrNull ?: return null
+                        val parts = mutableListOf("+$def DEF")
+                        val con = obj["constitutionBonus"]?.jsonPrimitive?.intOrNull ?: 0
+                        if (con > 0) parts += "+$con CON"
+                        return parts.joinToString("  ")
+                    }
+
+                    fun buildAccessoryStats(obj: kotlinx.serialization.json.JsonObject?): String? {
+                        obj ?: return null
+                        val parts = mutableListOf<String>()
+                        val int = obj["intelligenceBonus"]?.jsonPrimitive?.intOrNull ?: 0
+                        val wis = obj["wisdomBonus"]?.jsonPrimitive?.intOrNull ?: 0
+                        if (int > 0) parts += "+$int INT"
+                        if (wis > 0) parts += "+$wis WIS"
+                        return parts.ifEmpty { null }?.joinToString("  ")
+                    }
+
                     EquipmentUi(
-                        weapon = eq["weapon"]?.jsonPrimitive?.content ?: "None",
-                        armor = eq["armor"]?.jsonPrimitive?.content ?: "None",
-                        accessory = eq["accessory"]?.jsonPrimitive?.content ?: "None"
+                        weapon = weaponObj?.get("name")?.jsonPrimitive?.content ?: "None",
+                        weaponStats = buildWeaponStats(weaponObj),
+                        armor = armorObj?.get("name")?.jsonPrimitive?.content ?: "None",
+                        armorStats = buildArmorStats(armorObj),
+                        accessory = accessoryObj?.get("name")?.jsonPrimitive?.content ?: "None",
+                        accessoryStats = buildAccessoryStats(accessoryObj)
                     )
                 } ?: EquipmentUi()
 
@@ -564,6 +661,41 @@ class GameViewModel(
         startVoiceOnboarding(_uiState.value.authToken)
     }
 
+    fun showLoadGameDialog() {
+        val serverUrl = _uiState.value.serverUrl.trimEnd('/')
+        if (apiClient == null) {
+            apiClient = GameApiClient(serverUrl)
+        }
+        _uiState.update { it.copy(showLoadGameDialog = true, isLoadingSaves = true) }
+        viewModelScope.launch {
+            try {
+                val saves = apiClient!!.listSaves(_uiState.value.authToken)
+                _uiState.update { it.copy(savedGames = saves, isLoadingSaves = false) }
+            } catch (e: Exception) {
+                log.e(e) { "Failed to load saves" }
+                _uiState.update { it.copy(isLoadingSaves = false, errorMessage = "Failed to load saves: ${e.message}") }
+            }
+        }
+    }
+
+    fun dismissLoadGameDialog() {
+        _uiState.update { it.copy(showLoadGameDialog = false) }
+    }
+
+    fun loadSavedGame(gameId: String) {
+        log.i { "🎮 loadSavedGame: $gameId" }
+        val save = _uiState.value.savedGames.find { it.gameId == gameId }
+        pendingLoadGameId = gameId
+        _uiState.update {
+            it.copy(
+                showLoadGameDialog = false,
+                screen = Screen.LOADING_GAME,
+                loadingSeedId = save?.systemType?.lowercase() ?: "integration",
+                loadingStatus = "Loading your save..."
+            )
+        }
+    }
+
     fun stopOnboarding() {
         val geminiConn = connection as? OnboardingConnection
         geminiConn?.disconnectSession()
@@ -587,7 +719,7 @@ class GameViewModel(
 
     /**
      * Phase 1: Start Receptionist session for game type + character creation.
-     * No server game exists yet — tools are handled locally in GeminiLiveConnection.
+     * No server game exists yet — tools are handled locally by the OnboardingConnection.
      * Phase 2: After onboarding completes, create real game and reconnect.
      *
      * @param serverToken The server session token (already exchanged during sign-in).
@@ -600,11 +732,12 @@ class GameViewModel(
                 log.i { "🎙️ Creating API client for $serverUrl" }
                 apiClient = GameApiClient(serverUrl)
 
-                // Create connection (BridgedGeminiConnection on iOS, DirectGameConnection fallback)
+                // Create connection
                 log.i { "🎙️ Creating connection via factory..." }
-                // Configure native bridge with server URL before creating connection
+                // Configure native bridge with server URL before creating connection (iOS)
                 org.bigboyapps.rngenerator.audio.NativeGeminiProvider.bridge?.configure(serverUrl)
                 val conn = connectionFactory()
+                conn.configure(serverUrl)
                 connection = conn
                 log.i { "🎙️ Connection created: ${conn::class.simpleName}" }
 
@@ -618,7 +751,7 @@ class GameViewModel(
                     conn.messages.collect { msg -> handleServerMessage(msg) }
                 }
 
-                // If this is a GeminiLiveConnection, start Receptionist phase
+                // If this is an OnboardingConnection, start Receptionist phase
                 val geminiConn = conn as? OnboardingConnection
                 if (geminiConn != null) {
                     // Listen for onboarding completion → transition to game
@@ -632,7 +765,7 @@ class GameViewModel(
                     // Build Receptionist prompt
                     val receptionistPrompt = buildReceptionistPrompt()
                     log.i { "🎙️ Receptionist prompt (${receptionistPrompt.length} chars):\n$receptionistPrompt" }
-                    geminiConn.startReceptionistSession(receptionistPrompt)
+                    geminiConn.startReceptionistSession(receptionistPrompt, _uiState.value.authToken)
                     log.i { "🎙️ Receptionist session started" }
                 } else {
                     // Fallback (DirectGameConnection / iOS) — create game immediately
@@ -662,58 +795,169 @@ class GameViewModel(
     }
 
     /**
-     * Phase 2: Receptionist is done. Create real game on server and reconnect
-     * with the seed-specific companion prompt + voice.
+     * Phase 2: Receptionist is done. Transition to loading screen, then
+     * create game + generate portrait before entering the game.
      */
     private fun startGameSession(result: OnboardingResult) {
+        log.i { "🎮 startGameSession: seed=${result.seedId}, name=${result.playerName}" }
+        pendingOnboardingResult = result
+
+        // Disconnect receptionist but keep connection/apiClient alive for reuse
+        val geminiConn = connection as? OnboardingConnection
+        geminiConn?.disconnectSession()
+
+        // Transition to loading screen (music continues playing)
+        _uiState.update {
+            it.copy(
+                screen = Screen.LOADING_GAME,
+                onboardingTranscript = "",
+                loadingSeedId = result.seedId,
+                loadingStatus = "Creating your adventure..."
+            )
+        }
+    }
+
+    /**
+     * Called by LoadingGameScreen on launch.
+     * Creates game session, generates portrait, then transitions to GAME.
+     */
+    fun performLoadingSequence() {
         viewModelScope.launch {
             try {
-                val serverUrl = _uiState.value.serverUrl.trimEnd('/')
-                val geminiConn = connection as? OnboardingConnection
-                    ?: return@launch
+                val result = pendingOnboardingResult
+                val loadGameId = pendingLoadGameId
 
-                // Disconnect Receptionist session
-                geminiConn.disconnectSession()
-
-                // Refresh auth token before creating game (may have expired during onboarding)
-                val freshToken = try {
-                    Firebase.auth.currentUser?.getIdToken(true)
-                } catch (_: Exception) {
-                    _uiState.value.authToken
+                if (result != null) {
+                    // New game from onboarding
+                    performNewGameLoading(result)
+                } else if (loadGameId != null) {
+                    // Resuming a saved game
+                    performLoadGameLoading(loadGameId)
+                } else {
+                    log.e { "performLoadingSequence: no pending result or load game ID" }
+                    _uiState.update { it.copy(screen = Screen.LOBBY, errorMessage = "Nothing to load") }
                 }
-                if (freshToken != null) {
-                    _uiState.update { it.copy(authToken = freshToken) }
-                }
-                log.i { "🔐 createGame auth: hasToken=${freshToken != null}" }
-
-                // Create real game on server with collected info
-                val id = apiClient!!.createGame(
-                    name = result.playerName,
-                    backstory = result.backstory.ifBlank { null },
-                    seedId = result.seedId,
-                    authToken = freshToken
-                )
-                sessionId = id
-                log.i { "Game created: $id (seed=${result.seedId})" }
-
-                // Reconnect with game session (fetches companion prompt + tools from server)
-                geminiConn.startSession(serverUrl, id)
-
-                // Transition from ONBOARDING to GAME
-                _uiState.update {
-                    it.copy(
-                        screen = Screen.GAME,
-                        onboardingTranscript = "",
-                        playerStats = PlayerStatsUi(name = result.playerName)
-                    )
-                }
-
-                addNotification("Entering ${result.seedId}...")
-
             } catch (e: Exception) {
-                log.e(e) { "StartGameSession failed" }
+                log.e(e) { "Loading sequence failed" }
                 _uiState.update { it.copy(errorMessage = "Failed to start game: ${e.message}") }
             }
+        }
+    }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    private suspend fun performNewGameLoading(result: OnboardingResult) {
+        val serverUrl = _uiState.value.serverUrl.trimEnd('/')
+
+        // Refresh auth token (may have expired during onboarding)
+        val freshToken = try {
+            Firebase.auth.currentUser?.getIdToken(true)
+        } catch (_: Exception) {
+            _uiState.value.authToken
+        }
+        if (freshToken != null) {
+            _uiState.update { it.copy(authToken = freshToken) }
+        }
+
+        // Create game on server
+        _uiState.update { it.copy(loadingStatus = "Creating your adventure...") }
+        val id = apiClient!!.createGame(
+            name = result.playerName,
+            backstory = result.backstory.ifBlank { null },
+            seedId = result.seedId,
+            authToken = freshToken
+        )
+        sessionId = id
+        log.i { "Game created: $id (seed=${result.seedId})" }
+
+        // Generate portrait (best-effort, don't block on failure)
+        _uiState.update { it.copy(loadingStatus = "Generating your portrait...") }
+        try {
+            val portraitResult = apiClient!!.generatePortrait(
+                sessionId = id,
+                characterName = result.playerName,
+                appearance = result.portraitDescription.ifBlank { "A brave adventurer" }
+            )
+            if (portraitResult.success && portraitResult.imageBase64 != null) {
+                val bytes = kotlin.io.encoding.Base64.decode(portraitResult.imageBase64)
+                _uiState.update { it.copy(playerAvatarBytes = bytes) }
+                log.i { "Portrait generated: ${bytes.size} bytes" }
+            }
+        } catch (e: Exception) {
+            log.w(e) { "Portrait generation failed (non-fatal)" }
+        }
+
+        // Reconnect with game session
+        _uiState.update { it.copy(loadingStatus = "Connecting to your world...") }
+        val conn = connection ?: connectionFactory().also {
+            it.configure(serverUrl)
+            connection = it
+        }
+        if (conn is OnboardingConnection) {
+            conn.startSession(serverUrl, id)
+        } else {
+            conn.startSession(serverUrl, id)
+        }
+
+        // Transition to game
+        pendingOnboardingResult = null
+        _uiState.update {
+            it.copy(
+                screen = Screen.GAME,
+                loadingSeedId = null,
+                loadingStatus = null,
+                playerStats = PlayerStatsUi(name = result.playerName)
+            )
+        }
+    }
+
+    private suspend fun performLoadGameLoading(gameId: String) {
+        val serverUrl = _uiState.value.serverUrl.trimEnd('/')
+
+        val freshToken = try {
+            Firebase.auth.currentUser?.getIdToken(true)
+        } catch (_: Exception) {
+            _uiState.value.authToken
+        }
+        if (freshToken != null) {
+            _uiState.update { it.copy(authToken = freshToken) }
+        }
+
+        // Resume game on server
+        _uiState.update { it.copy(loadingStatus = "Loading your save...") }
+        if (apiClient == null) {
+            apiClient = GameApiClient(serverUrl)
+        }
+        val id = apiClient!!.loadGame(gameId, freshToken)
+        sessionId = id
+        log.i { "Game loaded: $id (from save $gameId)" }
+
+        // Connect to game session
+        _uiState.update { it.copy(loadingStatus = "Connecting to your world...") }
+        org.bigboyapps.rngenerator.audio.NativeGeminiProvider.bridge?.configure(serverUrl)
+        val conn = connectionFactory()
+        conn.configure(serverUrl)
+        connection = conn
+
+        // Observe connection state + messages
+        viewModelScope.launch {
+            conn.connectionState.collect { connState ->
+                _uiState.update { it.copy(connectionState = connState) }
+            }
+        }
+        viewModelScope.launch {
+            conn.messages.collect { msg -> handleServerMessage(msg) }
+        }
+
+        conn.startSession(serverUrl, id)
+
+        // Transition to game
+        pendingLoadGameId = null
+        _uiState.update {
+            it.copy(
+                screen = Screen.GAME,
+                loadingSeedId = null,
+                loadingStatus = null
+            )
         }
     }
 
@@ -722,8 +966,12 @@ class GameViewModel(
         appendLine()
         appendLine("PERSONALITY: Unimpressed. Short sentences. Dark humor. Think DMV meets film noir. You talk TO the player — first person, direct address. Not narrating.")
         appendLine()
-        appendLine("RULES: This is voice. NO lists, NO markdown. Keep it punchy. Never break character.")
-        appendLine("CRITICAL: Tool calls happen SILENTLY. NEVER say tool names out loud. NEVER vocalize 'set_backstory', 'set_player_name', 'select_world', or 'finish_onboarding'. Just call them. The player should never hear a tool name.")
+        appendLine("RULES:")
+        appendLine("- This is VOICE output. You MUST always respond with spoken audio. Never go silent. Never respond with only text or thinking.")
+        appendLine("- NO lists, NO markdown, NO bullet points. Keep it punchy. Never break character.")
+        appendLine("- Keep each response to 2-3 sentences max. Short and snappy. Don't monologue.")
+        appendLine("- CRITICAL: Tool calls happen SILENTLY. NEVER say tool names out loud. NEVER vocalize 'set_backstory', 'set_player_name', 'select_world', or 'finish_onboarding'. Just call them while continuing to speak naturally. The player should never hear a tool name.")
+        appendLine("- After calling a tool, ALWAYS continue speaking. Never end your turn with just a tool call.")
         appendLine()
         appendLine("FLOW (follow this order exactly):")
         appendLine()
@@ -749,7 +997,14 @@ class GameViewModel(
         appendLine("   - quiet_life → 'You've been assigned Bramble. Round fluffy forest spirit, size of a cat. Looks like a raccoon. Isn't one.'")
         appendLine("   Then: 'Walk through that door. They'll pick you up on the other side.' Call finish_onboarding with name, backstory, and world_id.")
         appendLine()
-        appendLine("IMPORTANT: You can call set_player_name/set_backstory/select_world individually as you go, OR bundle everything into finish_onboarding at the end. Either way, finish_onboarding MUST include name, backstory, and world_id.")
+        appendLine("CRITICAL — FUNCTION CALLING IS MANDATORY:")
+        appendLine("You have 4 functions available: set_player_name, set_backstory, select_world, finish_onboarding.")
+        appendLine("You MUST call these functions during the conversation. This is not optional.")
+        appendLine("- When the player tells you their name → immediately call set_player_name(name: \"their name\")")
+        appendLine("- When the player describes their backstory → immediately call set_backstory(backstory: \"their story\")")
+        appendLine("- When the player picks a world → immediately call select_world(seed_id: \"the_id\")")
+        appendLine("- After the send-off speech → call finish_onboarding() to end the session")
+        appendLine("The game CANNOT start without finish_onboarding. If you end the conversation without calling it, the player is stuck forever. Call your functions.")
         appendLine()
         appendLine("EXAMPLE (for tone and pacing — don't copy verbatim, improvise your own):")
         appendLine("Receptionist: 'You walk into a dim room that smells like mildew and old wood — behind a cluttered desk sits a woman in a wrinkled blouse, glasses on a chain, squinting at a monitor from 1997. She looks up. ...Oh great, another one. Let's skip the pleasantries, what's your name?'")
@@ -819,7 +1074,18 @@ class GameViewModel(
         if (text.isEmpty()) return
 
         _uiState.update { it.copy(textInput = "") }
-        addFeedItem(FeedItem.PlayerMessage(text))
+
+        // During onboarding, add to transcript; during game, add to feed
+        if (_uiState.value.screen == Screen.ONBOARDING) {
+            _uiState.update { state ->
+                val current = state.onboardingTranscript
+                val separator = if (current.isNotEmpty()) "\n\n" else ""
+                state.copy(onboardingTranscript = current + separator + "You: $text")
+            }
+        } else {
+            addFeedItem(FeedItem.PlayerMessage(text))
+        }
+
         viewModelScope.launch {
             connection?.sendText(text)
         }
@@ -827,6 +1093,12 @@ class GameViewModel(
 
     fun dismissError() {
         _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun toggleMusic() {
+        val enabled = !_uiState.value.isMusicEnabled
+        _uiState.update { it.copy(isMusicEnabled = enabled) }
+        musicPlayer.setVolume(if (enabled) 0.35f else 0f)
     }
 
     fun dismissNotification(index: Int) {
@@ -838,7 +1110,7 @@ class GameViewModel(
     // ── Server Message Handling ─────────────────────────────────
 
     private fun handleServerMessage(msg: ServerMessage) {
-        if (msg !is ServerMessage.Audio) log.d { "📨 ServerMessage: ${msg::class.simpleName}" }
+        if (msg !is ServerMessage.Audio && msg !is ServerMessage.MusicAudio) log.d { "📨 ServerMessage: ${msg::class.simpleName}" }
         when (msg) {
             is ServerMessage.Connected -> {
                 log.i { "📨 Connected — auto-starting mic and sending greeting" }
@@ -856,6 +1128,12 @@ class GameViewModel(
 
             is ServerMessage.Audio -> {
                 _uiState.update { it.copy(isGeminiSpeaking = true) }
+            }
+
+            is ServerMessage.MusicAudio -> {
+                if (_uiState.value.isMusicEnabled) {
+                    musicPlayer.enqueueChunk(msg.data)
+                }
             }
 
             is ServerMessage.Text -> {
@@ -897,7 +1175,7 @@ class GameViewModel(
                     "shift_music_mood" -> {
                         val mood = msg.args["mood"]?.jsonPrimitive?.content ?: return
                         _uiState.update { it.copy(musicMood = mood) }
-                        musicPlayer.setMood(mood)
+                        // Music mood is now handled server-side via Lyria — no local action needed
                     }
                     "start_combat" -> {
                         // Pre-populate combat description/type info from tool args
@@ -969,6 +1247,15 @@ class GameViewModel(
             is ServerMessage.Error -> {
                 log.e { "📨 Error: ${msg.message}" }
                 _uiState.update { it.copy(errorMessage = msg.message) }
+            }
+
+            is ServerMessage.OnboardingComplete -> {
+                log.i { "📨 OnboardingComplete: seed=${msg.seedId}, name=${msg.playerName}" }
+                startGameSession(OnboardingResult(
+                    seedId = msg.seedId,
+                    playerName = msg.playerName,
+                    backstory = msg.backstory
+                ))
             }
         }
     }
@@ -1052,6 +1339,15 @@ class GameViewModel(
                 val victory = event["victory"]?.jsonPrimitive?.booleanOrNull ?: true
                 addFeedItem(FeedItem.CombatEnd(enemyName, victory))
                 _uiState.update { it.copy(combat = null) }
+            }
+            "CombatLog" -> {
+                val text = event["text"]?.jsonPrimitive?.content ?: return
+                addFeedItem(FeedItem.CombatAction(text))
+            }
+            "LocationChanged" -> {
+                val locationName = event["locationName"]?.jsonPrimitive?.content ?: return
+                addFeedItem(FeedItem.LocationChange(locationName))
+                _uiState.update { it.copy(currentLocationName = locationName) }
             }
         }
     }
@@ -1174,8 +1470,10 @@ class GameViewModel(
     private fun appendOnboardingTranscript(text: String) {
         _uiState.update { state ->
             // Transcription arrives as small fragments within a turn — just append directly.
-            // Newlines are added when a turn completes (TurnComplete message).
-            state.copy(onboardingTranscript = state.onboardingTranscript + text)
+            // Ensure space between chunks (Gemini sometimes strips leading spaces).
+            val current = state.onboardingTranscript
+            val separator = if (current.isNotEmpty() && !current.endsWith(" ") && !current.endsWith("\n") && !text.startsWith(" ")) " " else ""
+            state.copy(onboardingTranscript = current + separator + text)
         }
     }
 
@@ -1185,6 +1483,10 @@ class GameViewModel(
      * The item is updated in-place in the feed list for smooth UX.
      */
     private fun appendToStreamingNarration(text: String) {
+        // Ensure space between chunks — Gemini output transcription sometimes strips leading spaces
+        if (streamingNarrationBuffer.isNotEmpty() && !text.startsWith(" ") && !streamingNarrationBuffer.endsWith(" ")) {
+            streamingNarrationBuffer.append(" ")
+        }
         streamingNarrationBuffer.append(text)
         val fullText = streamingNarrationBuffer.toString()
 
@@ -1234,6 +1536,8 @@ class GameViewModel(
             is FeedItem.CompanionAside -> "${item.companionName}: ${item.text}"
             is FeedItem.CombatStart -> "vs ${item.combat.enemyName}"
             is FeedItem.CombatEnd -> "${item.enemyName} ${if (item.victory) "defeated" else "escaped"}"
+            is FeedItem.CombatAction -> item.text
+            is FeedItem.LocationChange -> "→ ${item.locationName}"
         }}" }
         _uiState.update { state ->
             state.copy(feedItems = (state.feedItems + item).takeLast(200))

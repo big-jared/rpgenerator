@@ -46,9 +46,6 @@ class MainActivity : ComponentActivity() {
         AuthStore.init(applicationContext)
         AuthStoreProvider.init(AuthStore())
 
-        // Init music player context
-        MusicPlayer.initContext(applicationContext)
-
         // Request permissions
         val permissionsNeeded = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)

@@ -21,5 +21,10 @@
 	<string>931553644155-ot19ogbgohlvh4r4pgbn6h8nnl6bm9sk.apps.googleusercontent.com</string>
 	<key>GIDClientID</key>
 	<string>931553644155-5eq5sht4sq4c87gq343chgqm1eqjjphj.apps.googleusercontent.com</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

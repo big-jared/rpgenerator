@@ -1,150 +1,106 @@
 package com.rpgenerator.server
 
 import com.google.genai.Client
-import com.google.genai.types.GenerateImagesConfig
-import com.google.genai.types.PersonGeneration
+import com.google.genai.types.Content
+import com.google.genai.types.GenerateContentConfig
+import com.google.genai.types.Part
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.awt.image.BufferedImage
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
-import javax.imageio.IIOImage
-import javax.imageio.ImageIO
-import javax.imageio.ImageWriteParam
 
 /**
- * Generates images using Gemini's Imagen API.
- * Handles portrait generation, scene art, and item illustrations.
+ * Generates images using Gemini's native multimodal image generation.
+ * Uses gemini-2.5-flash-preview-native-audio-thinking with responseModalities: [TEXT, IMAGE]
+ * for interleaved text+image output — a key requirement for Creative Storyteller track.
  *
+ * Handles portrait generation, scene art, and item illustrations.
  * Uses carefully crafted prompts to maintain visual consistency
  * across a game session (consistent art style, character appearance).
  */
 class ImageGenerationService(
     private val client: Client,
-    private val model: String = "imagen-4.0-fast-generate-001"
+    private val model: String = "gemini-2.5-flash-image"
 ) {
     /**
      * Generate a character portrait.
-     * Returns image bytes (PNG) or null if generation fails.
+     * Returns image bytes or null if generation fails.
      */
     suspend fun generatePortrait(request: PortraitRequest): ImageResult {
         val prompt = buildPortraitPrompt(request)
-        return generateImage(
-            prompt = prompt,
-            negativePrompt = PORTRAIT_NEGATIVE,
-            aspectRatio = "1:1"
-        )
+        return generateImage(prompt)
     }
 
     /**
      * Generate scene art for the current game moment.
-     * Returns image bytes (PNG) or null if generation fails.
+     * Returns image bytes or null if generation fails.
      */
     suspend fun generateSceneArt(request: SceneArtRequest): ImageResult {
         val prompt = buildScenePrompt(request)
-        return generateImage(
-            prompt = prompt,
-            negativePrompt = SCENE_NEGATIVE,
-            aspectRatio = "16:9"
-        )
+        return generateImage(prompt)
     }
 
     /**
      * Generate an item illustration.
-     * @param iconSize if true, resize to 128px for inventory grid icons
      */
     suspend fun generateItemArt(request: ItemArtRequest, iconSize: Boolean = false): ImageResult {
         val prompt = buildItemPrompt(request)
-        return generateImage(
-            prompt = prompt,
-            negativePrompt = ITEM_NEGATIVE,
-            aspectRatio = "1:1",
-            maxDimension = if (iconSize) 128 else 512
-        )
+        return generateImage(prompt)
     }
 
-    private suspend fun generateImage(
-        prompt: String,
-        negativePrompt: String,
-        aspectRatio: String,
-        maxDimension: Int = 512
-    ): ImageResult {
+    /**
+     * Core generation method — sends prompt to Gemini with TEXT+IMAGE modalities,
+     * extracts the inline image from the response.
+     */
+    private suspend fun generateImage(prompt: String): ImageResult {
         return try {
-            val config = GenerateImagesConfig.builder()
-                .numberOfImages(1)
-                .aspectRatio(aspectRatio)
-                .personGeneration(PersonGeneration.Known.ALLOW_ADULT)
-                .outputMimeType("image/png")
+            val config = GenerateContentConfig.builder()
+                .responseModalities("TEXT", "IMAGE")
                 .build()
 
+            val contents = listOf(
+                Content.builder()
+                    .role("user")
+                    .parts(listOf(Part.builder().text(prompt).build()))
+                    .build()
+            )
+
             val response = withContext(Dispatchers.IO) {
-                client.models.generateImages(model, prompt, config)
+                client.models.generateContent(model, contents, config)
             }
 
-            val images = response.images()
-            if (images != null && images.isNotEmpty()) {
-                val imageBytes = images[0].imageBytes()
-                if (imageBytes.isPresent) {
-                    val compressed = compressImage(imageBytes.get(), maxDimension)
-                    ImageResult.Success(
-                        imageData = compressed,
-                        mimeType = "image/jpeg",
-                        prompt = prompt
-                    )
-                } else {
-                    ImageResult.Failure("Image generated but no bytes returned", prompt)
+            // Extract image from response parts
+            val parts = response.candidates().orElse(emptyList()).firstOrNull()
+                ?.content()?.orElse(null)?.parts()?.orElse(emptyList()) ?: emptyList()
+
+            var imageBytes: ByteArray? = null
+            var mimeType = "image/png"
+
+            for (part in parts) {
+                val inlineData = part.inlineData().orElse(null)
+                if (inlineData != null) {
+                    imageBytes = inlineData.data().orElse(null)
+                    mimeType = inlineData.mimeType().orElse("image/png")
+                    if (imageBytes != null) break
                 }
+            }
+
+            if (imageBytes != null) {
+                ImageResult.Success(
+                    imageData = imageBytes,
+                    mimeType = mimeType,
+                    prompt = prompt
+                )
             } else {
-                ImageResult.Failure("No images in response (may have been filtered)", prompt)
+                ImageResult.Failure("Gemini returned no image data in response", prompt)
             }
         } catch (e: Exception) {
             ImageResult.Failure("Image generation failed: ${e.message}", prompt)
         }
     }
 
-    /**
-     * Resize to maxDimension and compress to JPEG at 80% quality.
-     */
-    private fun compressImage(pngBytes: ByteArray, maxDimension: Int): ByteArray {
-        val original = ImageIO.read(ByteArrayInputStream(pngBytes))
-            ?: return pngBytes // fallback if decode fails
-
-        // Calculate new dimensions preserving aspect ratio
-        val scale = maxDimension.toDouble() / maxOf(original.width, original.height)
-        val newWidth: Int
-        val newHeight: Int
-        if (scale < 1.0) {
-            newWidth = (original.width * scale).toInt()
-            newHeight = (original.height * scale).toInt()
-        } else {
-            newWidth = original.width
-            newHeight = original.height
-        }
-
-        // Resize
-        val resized = BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB)
-        val g = resized.createGraphics()
-        g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-        g.drawImage(original, 0, 0, newWidth, newHeight, null)
-        g.dispose()
-
-        // Compress to JPEG
-        val out = ByteArrayOutputStream()
-        val writer = ImageIO.getImageWritersByFormatName("jpeg").next()
-        val param = writer.defaultWriteParam.apply {
-            compressionMode = ImageWriteParam.MODE_EXPLICIT
-            compressionQuality = 0.80f
-        }
-        writer.output = ImageIO.createImageOutputStream(out)
-        writer.write(null, IIOImage(resized, null, null), param)
-        writer.dispose()
-
-        return out.toByteArray()
-    }
-
     // ── Prompt Engineering ────────────────────────────────────────────
 
     private fun buildPortraitPrompt(req: PortraitRequest): String = buildString {
+        append("Generate an image: ")
         append(STYLE_PREFIX)
 
         // Framing
@@ -189,6 +145,7 @@ class ImageGenerationService(
     }
 
     private fun buildScenePrompt(req: SceneArtRequest): String = buildString {
+        append("Generate an image: ")
         append(STYLE_PREFIX)
         append("Wide establishing shot, ")
 
@@ -227,6 +184,7 @@ class ImageGenerationService(
     }
 
     private fun buildItemPrompt(req: ItemArtRequest): String = buildString {
+        append("Generate an image: ")
         append("Square fantasy RPG inventory icon, oil painting style, detailed brushwork, fantasy RPG UI aesthetic. ")
         append("${req.name}: ${req.description}. ")
 
@@ -293,24 +251,6 @@ class ImageGenerationService(
         private const val QUALITY_SUFFIX =
             "Sharp focus, professional illustration quality, painterly brushwork, " +
             "rich color palette, volumetric lighting, dark moody background."
-
-        private const val PORTRAIT_NEGATIVE =
-            "photo, photograph, realistic photo, selfie, " +
-            "blurry, low quality, deformed, extra limbs, extra fingers, " +
-            "text, words, letters, writing, caption, label, title, name, watermark, signature, " +
-            "frame, border, nsfw, nude, gore"
-
-        private const val SCENE_NEGATIVE =
-            "photo, photograph, realistic photo, " +
-            "blurry, low quality, deformed, " +
-            "text, words, letters, writing, watermark, signature, UI elements, " +
-            "nsfw, gore"
-
-        private const val ITEM_NEGATIVE =
-            "photo, photograph, hands holding item, person, character, " +
-            "blurry, low quality, " +
-            "text, words, letters, writing, watermark, " +
-            "cluttered background, multiple items"
     }
 }
 
