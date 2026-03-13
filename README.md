@@ -205,38 +205,6 @@ The Android app connects to the dev server, which proxies audio to/from Gemini L
 
 Requires Android SDK and a device/emulator with Google Play Services. The app uses a foreground service with microphone access for the Gemini Live voice session.
 
-## Testing
-
-### Unit Tests
-
-```bash
-./gradlew :core:allTests
-```
-
-### QA Tests (AI-driven)
-
-The QA test runner launches an AI agent (Claude Code or Codex) that plays through test scenarios via MCP tools and files bug reports automatically.
-
-```bash
-# Requires: dev server running + claude or codex CLI installed
-./qa_tests/run_tests.sh              # Run all tests
-./qa_tests/run_tests.sh happy        # Normal gameplay verification
-./qa_tests/run_tests.sh breaker      # Edge cases & adversarial inputs
-./qa_tests/run_tests.sh confused     # Confused player simulation
-```
-
-Options:
-
-| Flag | Description |
-|------|-------------|
-| `--provider claude\|codex` | CLI to use (default: auto-detect) |
-| `--model MODEL` | Model override |
-| `--max-turns N` | Max agent turns (default: 50) |
-| `--dangerous` | Skip permission prompts |
-| `--verbose` | Verbose output |
-
-Bug reports are written to `qa_tests/bug_reports/` as JSON files.
-
 ## Tech Stack
 
 - **Kotlin Multiplatform** (JVM, iOS, Android)
