@@ -13,8 +13,10 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * WebSocket client that connects to the game server for Gemini Live API streaming.
  */
 class GameWebSocketClient(
-    private val serverUrl: String
+    serverUrl: String
 ) {
+    // TODO: Remap to 8081 once Python bridge audio input is fixed
+    private val serverUrl: String = serverUrl
     private val client = HttpClient {
         install(WebSockets) {
             pingIntervalMillis = 15_000
@@ -245,7 +247,33 @@ class GameWebSocketClient(
                     val seedId = obj["seedId"]?.jsonPrimitive?.content ?: "integration"
                     val playerName = obj["playerName"]?.jsonPrimitive?.content ?: "Adventurer"
                     val backstory = obj["backstory"]?.jsonPrimitive?.content ?: ""
-                    ServerMessage.OnboardingComplete(seedId, playerName, backstory)
+                    val portraitDesc = obj["portraitDescription"]?.jsonPrimitive?.content ?: ""
+                    ServerMessage.OnboardingComplete(seedId, playerName, backstory, portraitDesc)
+                }
+                "feed" -> {
+                    val entryObj = obj["entry"]?.jsonObject ?: return null
+                    val entry = FeedEntryDto(
+                        id = entryObj["id"]?.jsonPrimitive?.longOrNull ?: return null,
+                        type = entryObj["type"]?.jsonPrimitive?.content ?: return null,
+                        timestamp = entryObj["timestamp"]?.jsonPrimitive?.longOrNull ?: 0L,
+                        text = entryObj["text"]?.jsonPrimitive?.content,
+                        metadata = entryObj["metadata"]?.jsonObject ?: JsonObject(emptyMap())
+                    )
+                    ServerMessage.Feed(entry)
+                }
+                "feed_sync" -> {
+                    val entriesArr = obj["entries"]?.jsonArray ?: return null
+                    val entries = entriesArr.mapNotNull { el ->
+                        val e = el.jsonObject
+                        FeedEntryDto(
+                            id = e["id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null,
+                            type = e["type"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                            timestamp = e["timestamp"]?.jsonPrimitive?.longOrNull ?: 0L,
+                            text = e["text"]?.jsonPrimitive?.content,
+                            metadata = e["metadata"]?.jsonObject ?: JsonObject(emptyMap())
+                        )
+                    }
+                    ServerMessage.FeedSync(entries)
                 }
                 "turn_complete" -> ServerMessage.TurnComplete
                 "connected" -> ServerMessage.Connected

@@ -126,6 +126,14 @@ fun main() {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
     println("Starting RPGenerator server on port $port")
 
+    // Validate required env vars early
+    val apiKey = System.getenv("GOOGLE_API_KEY")
+    if (apiKey.isNullOrBlank()) {
+        System.err.println("FATAL: GOOGLE_API_KEY environment variable is required but not set.")
+        System.err.println("Set it via: export GOOGLE_API_KEY=your-key")
+        kotlin.system.exitProcess(1)
+    }
+
     val isDev = System.getenv("KTOR_DEVELOPMENT")?.toBoolean() ?: false
     if (isDev) println("Development mode ON")
 
@@ -156,8 +164,10 @@ fun main() {
 
         install(StatusPages) {
             exception<Throwable> { call, cause ->
+                System.err.println("Unhandled exception on ${call.request.uri}: ${cause.message}")
+                cause.printStackTrace(System.err)
                 call.respondText(
-                    text = """{"error": "${cause.message?.replace("\"", "\\\"") ?: "Unknown error"}"}""",
+                    text = """{"error": "Internal server error"}""",
                     contentType = ContentType.Application.Json,
                     status = HttpStatusCode.InternalServerError
                 )
@@ -167,7 +177,7 @@ fun main() {
         install(WebSockets) {
             pingPeriod = 15.seconds
             timeout = 60.seconds
-            maxFrameSize = Long.MAX_VALUE
+            maxFrameSize = 10 * 1024 * 1024 // 10MB
             masking = false
         }
 
@@ -255,7 +265,7 @@ fun main() {
                     CreateGameRequest()
                 }
                 val session = GameSessionManager.createSession(
-                    seedId = body.seedId ?: "integration",
+                    seedId = body.seedId?.ifBlank { "integration" } ?: "integration",
                     characterCreation = CharacterCreationOptions(
                         name = body.name ?: "Adventurer",
                         backstory = body.backstory
@@ -263,6 +273,27 @@ fun main() {
                 )
                 call.respondText(
                     """{"sessionId": "${session.id}"}""",
+                    ContentType.Application.Json
+                )
+            }
+
+            // Get setup info for Gemini Live connection (system prompt + voice)
+            get("/api/game/{sessionId}/setup") {
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val prompt = session.game.getSystemPrompt()
+                val voice = session.game.getCompanionVoice().ifBlank { "Kore" }
+                // Escape for JSON string embedding
+                val escapedPrompt = prompt
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t")
+                call.respondText(
+                    """{"systemPrompt": "$escapedPrompt", "voiceName": "$voice"}""",
                     ContentType.Application.Json
                 )
             }
@@ -292,6 +323,21 @@ fun main() {
                 call.respond(stateWithIcons)
             }
 
+            // Get recent feed entries for a game session (for pre-populating feed on load/resume)
+            get("/api/game/{sessionId}/events") {
+                if (authEnabled && AuthHandler.verifyRequest(call) == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    return@get
+                }
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 50
+                val entries = session.feedStore.recent(limit)
+                call.respond(entries)
+            }
+
             // Execute a tool on a game session
             post("/api/game/{sessionId}/tool") {
                 if (authEnabled && AuthHandler.verifyRequest(call) == null) {
@@ -305,12 +351,40 @@ fun main() {
 
                 val body = call.receive<ToolExecutionRequest>()
                 val argsMap: Map<String, Any?> = body.args
+
+                // Handle image-only tools that don't exist in the core tool contract
+                var imageBase64: String? = null
+                var imageMimeType: String? = null
+
+                if (body.name == "generate_portrait") {
+                    // Portrait generation is server-only (not a core game tool)
+                    try {
+                        val appearance = (body.args["appearance"] ?: body.args["description"] ?: "").toString()
+                        val name = (body.args["characterName"] ?: "").toString()
+                        val imgResult = session.imageService.generatePortrait(
+                            PortraitRequest(name = name, appearance = appearance)
+                        )
+                        if (imgResult is ImageResult.Success) {
+                            imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
+                            imageMimeType = imgResult.mimeType
+                        }
+                    } catch (_: Exception) {}
+
+                    call.respond(ToolExecutionResponse(
+                        success = imageBase64 != null,
+                        data = JsonObject(emptyMap()),
+                        events = emptyList(),
+                        error = if (imageBase64 == null) "Portrait generation failed" else null,
+                        imageBase64 = imageBase64,
+                        imageMimeType = imageMimeType
+                    ))
+                    return@post
+                }
+
                 val result = session.game.executeTool(body.name, argsMap)
 
                 // Generic visualPrompt interception — any tool can include a visualPrompt
                 // in its result data, and the server generates the appropriate image type.
-                var imageBase64: String? = null
-                var imageMimeType: String? = null
 
                 if (result.success) {
                     val visualPrompt = result.data["visualPrompt"]?.let { (it as? JsonPrimitive)?.content }
@@ -347,18 +421,6 @@ fun main() {
                                     locationName = state.location,
                                     description = description
                                 )
-                            )
-                            if (imgResult is ImageResult.Success) {
-                                imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
-                                imageMimeType = imgResult.mimeType
-                            }
-                        } catch (_: Exception) {}
-                    } else if (body.name == "generate_portrait") {
-                        // Legacy path: explicit generate_portrait tool
-                        try {
-                            val description = body.args["description"] ?: ""
-                            val imgResult = session.imageService.generatePortrait(
-                                PortraitRequest(name = "", appearance = description)
                             )
                             if (imgResult is ImageResult.Success) {
                                 imageBase64 = java.util.Base64.getEncoder().encodeToString(imgResult.imageData)
@@ -476,20 +538,26 @@ fun main() {
                     return@post
                 }
                 val body = call.receiveText()
+                println("POST /api/game/load body=$body")
                 val parsed = Json.decodeFromString<JsonObject>(body)
                 val gameId = parsed["gameId"]?.let { (it as? JsonPrimitive)?.content }
                     ?: return@post call.respond(HttpStatusCode.BadRequest)
+                println("POST /api/game/load: Resuming gameId=$gameId")
                 val persisted = PersistedSession(
                     gameId = gameId,
                     gameStarted = true,
                     gameCreated = true
                 )
                 val session = GameSessionManager.resumeSession(persisted)
-                    ?: return@post call.respondText(
-                        """{"error": "Save not found"}""",
+                if (session == null) {
+                    println("POST /api/game/load: resumeSession returned null for $gameId")
+                    return@post call.respondText(
+                        """{"error": "Save not found or failed to load"}""",
                         ContentType.Application.Json,
                         HttpStatusCode.NotFound
                     )
+                }
+                println("POST /api/game/load: OK — session=${session.id}")
                 call.respondText(
                     """{"sessionId": "${session.id}"}""",
                     ContentType.Application.Json

@@ -29,6 +29,12 @@ dependencies {
 
     // SLF4J
     implementation("org.slf4j:slf4j-simple:2.0.9")
+
+    // Test
+    testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("io.ktor:ktor-server-test-host:3.0.3")
+    testImplementation("io.ktor:ktor-client-content-negotiation:3.0.3")
 }
 
 application {

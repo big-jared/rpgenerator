@@ -260,23 +260,15 @@ private val sampleLocationFeed = listOf(
     ),
 )
 
-private val sampleOnboardingTranscript =
-    "You walk into a dim room that smells like mildew and old wood — behind a cluttered desk sits a woman in a wrinkled blouse, " +
-    "glasses on a chain, squinting at a monitor from 1997.\n\n" +
-    "She looks up.\n\n" +
-    "\"Oh great, another one. Let's skip the pleasantries — what's your name?\"\n\n" +
-    "\"Kael.\"\n\n" +
-    "\"Kael. Sure. Very heroic. Alright Kael, what's your story? What were you doing before you wound up in my lobby?\"\n\n" +
-    "\"I was a ranger. Tracked things in the deep woods.\"\n\n" +
-    "\"A ranger. Riveting. Well, at least you can handle yourself outdoors, I suppose. Now then — " +
-    "we've got four worlds available right now. Pick your poison.\n\n" +
-    "System Integration — that's the big one. Towers, tiers, the whole progression fantasy. Think of it as reality " +
-    "with a very aggressive RPG plugin.\n\n" +
-    "High Fantasy — classic swords and sorcery. Dragons, magic, the usual. Your ranger skills will feel right at home.\n\n" +
-    "Dungeon Crawler — floors, bosses, loot. Straight down. Don't look up.\n\n" +
-    "Or Quiet Life — post-apocalypse, but the cozy kind. Farming, foraging, rebuilding. Less stabbing, more planting.\"\n\n" +
-    "\"System Integration.\"\n\n" +
-    "\"Naturally. Everyone picks the hard one.\""
+private val sampleOnboardingMessages = listOf(
+    OnboardingMessage("model", "You walk into a dim room that smells like mildew and old wood — behind a cluttered desk sits a woman in a wrinkled blouse, glasses on a chain, squinting at a monitor from 1997. She looks up. \"Oh great, another one. Let's skip the pleasantries — what's your name?\""),
+    OnboardingMessage("user", "Kael."),
+    OnboardingMessage("model", "\"Kael. Sure. Very heroic. Alright Kael, what's your story? What were you doing before you wound up in my lobby?\""),
+    OnboardingMessage("user", "I was a ranger. Tracked things in the deep woods."),
+    OnboardingMessage("model", "\"A ranger. Riveting. Well, at least you can handle yourself outdoors, I suppose. Now then — we've got four worlds available right now. Pick your poison. System Integration — that's the big one. Towers, tiers, the whole progression fantasy. High Fantasy — classic swords and sorcery. Dungeon Crawler — floors, bosses, loot. Or Quiet Life — post-apocalypse, but the cozy kind.\""),
+    OnboardingMessage("user", "System Integration."),
+    OnboardingMessage("model", "\"Naturally. Everyone picks the hard one.\"")
+)
 
 // ══════════════════════════════════════════════════════════════════
 //  1. LOBBY SCREEN
@@ -298,7 +290,7 @@ private fun LobbyScreenPreview() {
 @Composable
 private fun OnboardingConversationPreview() {
     MaterialTheme(typography = appTypography()) {
-        OnboardingContent(transcript = sampleOnboardingTranscript)
+        OnboardingContent(messages = sampleOnboardingMessages)
     }
 }
 
@@ -344,6 +336,8 @@ private fun ExplorationFeedPreview() {
                 isListening = true,
                 isGeminiSpeaking = false,
                 isMusicEnabled = true,
+                companionName = "Hank",
+                playerAvatarBytes = null,
                 onMicPressed = {},
                 onMenuPressed = {},
                 onMusicToggle = {},
@@ -380,6 +374,8 @@ private fun LocationExplorationPreview() {
                 isListening = true,
                 isGeminiSpeaking = true,
                 isMusicEnabled = true,
+                companionName = "Hank",
+                playerAvatarBytes = null,
                 onMicPressed = {},
                 onMenuPressed = {},
                 onMusicToggle = {},
@@ -416,6 +412,8 @@ private fun NpcMeetingPreview() {
                 isListening = true,
                 isGeminiSpeaking = false,
                 isMusicEnabled = true,
+                companionName = "Hank",
+                playerAvatarBytes = null,
                 onMicPressed = {},
                 onMenuPressed = {},
                 onMusicToggle = {},
@@ -458,6 +456,8 @@ private fun CombatActivePreview() {
                 isListening = true,
                 isGeminiSpeaking = false,
                 isMusicEnabled = true,
+                companionName = "Hank",
+                playerAvatarBytes = null,
                 onMicPressed = {},
                 onMenuPressed = {},
                 onMusicToggle = {},
@@ -490,6 +490,8 @@ private fun CombatVictoryFeedPreview() {
                 isListening = true,
                 isGeminiSpeaking = false,
                 isMusicEnabled = true,
+                companionName = "Hank",
+                playerAvatarBytes = null,
                 onMicPressed = {},
                 onMenuPressed = {},
                 onMusicToggle = {},

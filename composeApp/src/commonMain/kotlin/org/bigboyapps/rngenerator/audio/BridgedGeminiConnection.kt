@@ -103,9 +103,44 @@ class BridgedGeminiConnection : OnboardingConnection {
             if (pendingOnboardingResult != null) return
             _messages.tryEmit(ServerMessage.Error(message))
         }
-        override fun onOnboardingComplete(seedId: String, playerName: String, backstory: String) {
+        override fun onOnboardingComplete(seedId: String, playerName: String, backstory: String, portraitDescription: String) {
             // Defer until TurnComplete so the receptionist's farewell audio finishes playing
-            pendingOnboardingResult = OnboardingResult(seedId = seedId, playerName = playerName, backstory = backstory)
+            pendingOnboardingResult = OnboardingResult(seedId = seedId, playerName = playerName, backstory = backstory, portraitDescription = portraitDescription)
+        }
+        override fun onFeedMessage(json: String) {
+            try {
+                val obj = this@BridgedGeminiConnection.json.parseToJsonElement(json).jsonObject
+                val type = obj["type"]?.jsonPrimitive?.content ?: return
+                when (type) {
+                    "feed" -> {
+                        val entryObj = obj["entry"]?.jsonObject ?: return
+                        val entry = org.bigboyapps.rngenerator.network.FeedEntryDto(
+                            id = entryObj["id"]?.jsonPrimitive?.longOrNull ?: return,
+                            type = entryObj["type"]?.jsonPrimitive?.content ?: return,
+                            timestamp = entryObj["timestamp"]?.jsonPrimitive?.longOrNull ?: 0L,
+                            text = entryObj["text"]?.jsonPrimitive?.content,
+                            metadata = entryObj["metadata"]?.jsonObject ?: JsonObject(emptyMap())
+                        )
+                        _messages.tryEmit(ServerMessage.Feed(entry))
+                    }
+                    "feed_sync" -> {
+                        val entriesArr = obj["entries"]?.jsonArray ?: return
+                        val entries = entriesArr.mapNotNull { el ->
+                            val e = el.jsonObject
+                            org.bigboyapps.rngenerator.network.FeedEntryDto(
+                                id = e["id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null,
+                                type = e["type"]?.jsonPrimitive?.content ?: return@mapNotNull null,
+                                timestamp = e["timestamp"]?.jsonPrimitive?.longOrNull ?: 0L,
+                                text = e["text"]?.jsonPrimitive?.content,
+                                metadata = e["metadata"]?.jsonObject ?: JsonObject(emptyMap())
+                            )
+                        }
+                        _messages.tryEmit(ServerMessage.FeedSync(entries))
+                    }
+                }
+            } catch (e: Exception) {
+                println("BridgedGeminiConnection: Failed to parse feed message: ${e.message}")
+            }
         }
     }
 

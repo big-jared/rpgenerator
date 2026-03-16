@@ -9,11 +9,13 @@ class SwiftGeminiBridge: NativeGeminiBridge {
     private var webSocketTask: URLSessionWebSocketTask? = nil
     private var callback: GeminiMessageCallback? = nil
     private var isReceptionistMode = false
+    /// Base WebSocket URL (Kotlin game server, port 8080).
     private var serverUrl: String = "ws://localhost:8080"
 
     // Audio debug
     private var audioChunkCount = 0
     private var turnCount = 0
+    private var micChunkCount = 0
 
     // Audio — single engine, set up once
     private var audioEngine: AVAudioEngine? = nil
@@ -33,23 +35,30 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
     // Audio accumulation buffer — batch small chunks into larger buffers to avoid micro-gaps
     private var pendingAudioData = Data()
-    // ~80ms at 24kHz 16-bit mono = 3840 bytes (2 chunks of 1920)
-    // Low enough to stay close to transcript timing, high enough to avoid per-chunk gaps
-    private let audioFlushThreshold = 3840
+    // ~200ms at 24kHz 16-bit mono = 9600 bytes (5 chunks of 1920)
+    // Large enough to absorb WebSocket jitter, small enough to keep latency reasonable
+    private let audioFlushThreshold = 9600
+    // Pre-buffer: accumulate ~400ms before scheduling the first buffer of a new turn,
+    // so the player node has a cushion and doesn't drain between arrivals
+    private let audioPreBufferThreshold = 19200
+    private var isPreBuffering = true
 
     // MARK: - Configuration
 
     func configure(serverUrl: String) {
         // Strip trailing slash
-        self.serverUrl = serverUrl.hasSuffix("/") ? String(serverUrl.dropLast()) : serverUrl
+        var url = serverUrl.hasSuffix("/") ? String(serverUrl.dropLast()) : serverUrl
         // Ensure ws:// or wss:// prefix
-        if self.serverUrl.hasPrefix("http://") {
-            self.serverUrl = "ws://" + self.serverUrl.dropFirst("http://".count)
-        } else if self.serverUrl.hasPrefix("https://") {
-            self.serverUrl = "wss://" + self.serverUrl.dropFirst("https://".count)
-        } else if !self.serverUrl.hasPrefix("ws://") && !self.serverUrl.hasPrefix("wss://") {
-            self.serverUrl = "ws://" + self.serverUrl
+        if url.hasPrefix("http://") {
+            url = "ws://" + url.dropFirst("http://".count)
+        } else if url.hasPrefix("https://") {
+            url = "wss://" + url.dropFirst("https://".count)
+        } else if !url.hasPrefix("ws://") && !url.hasPrefix("wss://") {
+            url = "ws://" + url
         }
+        // TODO: Remap to 8081 once Python bridge is stable
+        // url = url.replacingOccurrences(of: ":8080", with: ":8081")
+        self.serverUrl = url
         print("SwiftGeminiBridge: configured serverUrl=\(self.serverUrl)")
     }
 
@@ -117,9 +126,24 @@ class SwiftGeminiBridge: NativeGeminiBridge {
         engine.connect(musicPlayer, to: engine.mainMixerNode, format: musicFormat)
         musicPlayer.volume = musicVolume
 
-        // 5. Read input format AFTER enabling voice processing (VPIO may change it)
+        // 5. Start engine BEFORE reading input format — VPIO may change the
+        //    input node's format when the engine connects to hardware. Reading
+        //    the format pre-start and building a converter from it produces
+        //    all-zero output because the format is stale by the time audio flows.
+        do {
+            try engine.start()
+        } catch {
+            print("SwiftGeminiBridge: Engine start error: \(error)")
+            return
+        }
+
+        // 6. Now that engine is running, start players
+        player.play()
+        musicPlayer.play()
+
+        // 7. Read input format AFTER engine.start() — this is the real hardware format
         let inputFormat = inputNode.outputFormat(forBus: 0)
-        print("SwiftGeminiBridge: Input format after VPIO: \(inputFormat)")
+        print("SwiftGeminiBridge: Input format after engine start: \(inputFormat)")
 
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -132,18 +156,6 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             print("SwiftGeminiBridge: Failed to create audio converter from \(inputFormat) to 16kHz")
             return
         }
-
-        // 6. Start engine
-        do {
-            try engine.start()
-        } catch {
-            print("SwiftGeminiBridge: Engine start error: \(error)")
-            return
-        }
-
-        // 7. Now that engine is running, start players
-        player.play()
-        musicPlayer.play()
 
         self.audioEngine = engine
         self.playerNode = player
@@ -173,26 +185,43 @@ class SwiftGeminiBridge: NativeGeminiBridge {
     @objc private func handleEngineConfigChange(notification: Notification) {
         print("SwiftGeminiBridge: Engine config changed")
         guard let engine = audioEngine, let player = playerNode, let format = playbackFormat else { return }
-        if !engine.isRunning {
-            print("SwiftGeminiBridge: Engine stopped after config change, reconnecting and restarting")
-            // Reconnect players — config change invalidates existing connections
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-            if let musicPlayer = musicPlayerNode, let musicFormat = musicPlaybackFormat {
-                engine.connect(musicPlayer, to: engine.mainMixerNode, format: musicFormat)
-                musicPlayer.volume = musicVolume
-            }
-            do {
-                try engine.start()
-                player.play()
-                musicPlayerNode?.play()
-                // Re-install mic tap if recording was active — engine stop removes all taps
-                if isRecording {
-                    isRecording = false  // reset so startRecording() re-installs
-                    startRecording()
-                    print("SwiftGeminiBridge: Re-installed mic tap after config change")
+        audioQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            if !engine.isRunning {
+                print("SwiftGeminiBridge: Engine stopped after config change, reconnecting and restarting")
+                // Reconnect players — config change invalidates existing connections
+                engine.connect(player, to: engine.mainMixerNode, format: format)
+                if let musicPlayer = self.musicPlayerNode, let musicFormat = self.musicPlaybackFormat {
+                    engine.connect(musicPlayer, to: engine.mainMixerNode, format: musicFormat)
+                    musicPlayer.volume = self.musicVolume
                 }
-            } catch {
-                print("SwiftGeminiBridge: Engine restart after config change failed: \(error)")
+                do {
+                    try engine.start()
+                    player.play()
+                    self.musicPlayerNode?.play()
+                } catch {
+                    print("SwiftGeminiBridge: Engine restart after config change failed: \(error)")
+                    return
+                }
+            }
+
+            // Rebuild audio converter — VPIO config change can alter the input format
+            // even while the engine is still running (e.g. when playback drains after
+            // model turn completes). The old converter silently produces empty output.
+            let newInputFormat = engine.inputNode.outputFormat(forBus: 0)
+            print("SwiftGeminiBridge: Post-config-change input format: \(newInputFormat)")
+            if let targetFmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true),
+               let newConverter = AVAudioConverter(from: newInputFormat, to: targetFmt) {
+                self.audioConverter = newConverter
+            }
+
+            // Re-install mic tap with the new converter — the old tap's captured converter
+            // is stale and will produce silence or garbage with the new input format.
+            if self.isRecording {
+                self.isRecording = false  // reset so startRecording() re-installs
+                self.startRecording()
+                print("SwiftGeminiBridge: Re-installed mic tap after config change")
             }
         }
     }
@@ -204,14 +233,40 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
         switch type {
         case .began:
-            print("SwiftGeminiBridge: Audio interruption began")
+            let reason = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt
+            let wasSuspended = userInfo[AVAudioSessionInterruptionWasSuspendedKey] as? Bool ?? false
+            let route = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+            print("SwiftGeminiBridge: Audio interruption began — reason=\(reason ?? 999), wasSuspended=\(wasSuspended), route=\(route), engine=\(audioEngine?.isRunning ?? false)")
         case .ended:
             print("SwiftGeminiBridge: Audio interruption ended, restarting engine")
-            do {
-                try audioEngine?.start()
-                playerNode?.play()
-            } catch {
-                print("SwiftGeminiBridge: Failed to restart after interruption: \(error)")
+            audioQueue.async { [weak self] in
+                guard let self = self, let engine = self.audioEngine else { return }
+                do {
+                    // Re-activate audio session — it gets deactivated during interruption
+                    // (phone call, Siri, etc.) and engine.start() will fail without this.
+                    let avSession = AVAudioSession.sharedInstance()
+                    try avSession.setActive(true, options: .notifyOthersOnDeactivation)
+
+                    try engine.start()
+                    self.playerNode?.play()
+                    self.musicPlayerNode?.play()
+
+                    // Rebuild converter — input format may have changed during interruption
+                    let newInputFormat = engine.inputNode.outputFormat(forBus: 0)
+                    if let targetFmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true),
+                       let newConverter = AVAudioConverter(from: newInputFormat, to: targetFmt) {
+                        self.audioConverter = newConverter
+                    }
+
+                    // Re-install mic tap — interruption stops engine which removes all taps
+                    if self.isRecording {
+                        self.isRecording = false
+                        self.startRecording()
+                        print("SwiftGeminiBridge: Re-installed mic tap after interruption")
+                    }
+                } catch {
+                    print("SwiftGeminiBridge: Failed to restart after interruption: \(error)")
+                }
             }
         @unknown default:
             break
@@ -334,6 +389,21 @@ class SwiftGeminiBridge: NativeGeminiBridge {
                     if data.count > 1 && data[0] == 0x02 {
                         self.playMusicAudio(data.subdata(in: 1..<data.count))
                     } else {
+                        self.audioChunkCount += 1
+                        if self.audioChunkCount % 50 == 1 {
+                            // Sample first few Int16 values to verify PCM data isn't silence/garbage
+                            var samples: [Int16] = []
+                            let sampleCount = min(data.count / 2, 5)
+                            data.withUnsafeBytes { raw in
+                                let src = raw.bindMemory(to: Int16.self)
+                                for i in 0..<sampleCount {
+                                    samples.append(src[i])
+                                }
+                            }
+                            let maxAbs = samples.map { abs(Int32($0)) }.max() ?? 0
+                            let route = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+                            print("SwiftGeminiBridge: Audio chunk #\(self.audioChunkCount), \(data.count)B, samples=\(samples), peak=\(maxAbs), engine=\(self.audioEngine?.isRunning ?? false), player=\(self.playerNode?.isPlaying ?? false), route=\(route), pending=\(self.pendingAudioData.count)")
+                        }
                         self.playPcmAudio(data)
                     }
                 @unknown default:
@@ -418,14 +488,17 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             print("SwiftGeminiBridge: Turn \(turnCount) complete, \(audioChunkCount) total audio chunks so far")
             audioChunkCount = 0
             flushPendingAudio()
+            // Reset pre-buffer for next turn so it builds a fresh cushion
+            audioQueue.async { [weak self] in self?.isPreBuffering = true }
             callback.onTurnComplete()
 
         case "onboarding_complete":
             let seedId = json["seedId"] as? String ?? "integration"
             let playerName = json["playerName"] as? String ?? "Adventurer"
             let backstory = json["backstory"] as? String ?? ""
+            let portraitDesc = json["portraitDescription"] as? String ?? ""
             print("SwiftGeminiBridge: onboarding_complete: name=\(playerName), seed=\(seedId)")
-            callback.onOnboardingComplete(seedId: seedId, playerName: playerName, backstory: backstory)
+            callback.onOnboardingComplete(seedId: seedId, playerName: playerName, backstory: backstory, portraitDescription: portraitDesc)
 
         case "connected":
             print("SwiftGeminiBridge: Server confirmed connection")
@@ -437,15 +510,19 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             callback.onError(message: message)
 
         case "interrupted":
-            // Clear buffered audio so stale data doesn't play after interruption.
-            // Guard playerNode.reset() — node may have been detached from engine
-            // (e.g. after config change or disconnect), and calling it crashes with
-            // '_engine != nil' assertion.
+            // Stop old audio immediately, but use stop()+play() instead of reset().
+            // reset() can leave the node in a broken state; stop()+play() cleanly
+            // drains scheduled buffers and re-arms the node for new ones.
+            print("SwiftGeminiBridge: INTERRUPTED — dropping pending=\(pendingAudioData.count)B")
             audioQueue.async { [weak self] in
-                self?.pendingAudioData.removeAll()
-            }
-            if let engine = audioEngine, engine.isRunning, let player = playerNode {
-                player.reset()
+                guard let self = self else { return }
+                self.pendingAudioData.removeAll()
+                self.isPreBuffering = true  // Reset for next turn
+                if let player = self.playerNode, player.isPlaying {
+                    player.stop()
+                    player.play()
+                }
+                print("SwiftGeminiBridge: INTERRUPTED cleanup done, player=\(self.playerNode?.isPlaying ?? false)")
             }
             callback.onInterrupted()
 
@@ -471,6 +548,10 @@ class SwiftGeminiBridge: NativeGeminiBridge {
                 callback.onSceneImage(imageBase64: base64, mimeType: mimeType)
             }
 
+        case "feed", "feed_sync":
+            // Pass feed messages through as raw JSON — Kotlin side parses them
+            callback.onFeedMessage(json: text)
+
         default:
             print("SwiftGeminiBridge: Unknown message type: \(type)")
         }
@@ -483,8 +564,11 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             guard let self = self else { return }
             self.pendingAudioData.append(data)
 
-            // Flush when we've accumulated enough (~200ms) for smooth playback
-            if self.pendingAudioData.count >= self.audioFlushThreshold {
+            // Pre-buffer: accumulate a larger cushion before scheduling the very first
+            // buffer of a turn, so the player node doesn't drain between arrivals.
+            let threshold = self.isPreBuffering ? self.audioPreBufferThreshold : self.audioFlushThreshold
+            if self.pendingAudioData.count >= threshold {
+                self.isPreBuffering = false
                 self.flushAudioBuffer()
             }
         }
@@ -504,10 +588,21 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             pendingAudioData.removeAll()
             return
         }
-        // Don't touch nodes if engine was torn down
-        guard engine.isRunning || isAudioSetup else {
-            pendingAudioData.removeAll()
-            return
+
+        // If engine stopped (config change, interruption, etc.), try to restart it.
+        // Without this, audio silently drops until the session ends.
+        if !engine.isRunning {
+            print("SwiftGeminiBridge: Engine not running in flushAudioBuffer, attempting restart")
+            do {
+                try engine.start()
+                player.play()
+                musicPlayerNode?.play()
+                print("SwiftGeminiBridge: Engine restarted successfully")
+            } catch {
+                print("SwiftGeminiBridge: Engine restart failed: \(error), dropping \(pendingAudioData.count) bytes")
+                pendingAudioData.removeAll()
+                return
+            }
         }
 
         let pcmData = pendingAudioData
@@ -532,16 +627,12 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
         // Re-play if the node drained its queue and went idle
         if !player.isPlaying {
-            print("SwiftGeminiBridge: playerNode stopped, restarting. Engine running: \(audioEngine?.isRunning ?? false)")
-            if let engine = audioEngine, !engine.isRunning {
-                do {
-                    try engine.start()
-                } catch {
-                    print("SwiftGeminiBridge: Engine restart failed: \(error)")
-                    return
-                }
-            }
+            print("SwiftGeminiBridge: playerNode stopped, restarting (engine=\(engine.isRunning))")
             player.play()
+        }
+        // Log every 50 flushes to track playback health
+        if audioChunkCount % 50 == 0 {
+            print("SwiftGeminiBridge: flush \(pcmData.count)B → \(frameCount) frames, engine=\(engine.isRunning), player=\(player.isPlaying), vol=\(player.volume)")
         }
         player.scheduleBuffer(buffer, completionHandler: nil)
     }
@@ -587,7 +678,10 @@ class SwiftGeminiBridge: NativeGeminiBridge {
         guard !isRecording, let engine = audioEngine, let converter = audioConverter else { return }
 
         let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // Capture converter locally — if handleEngineConfigChange rebuilds self.audioConverter
+        // on audioQueue, the tap callback (which runs on a realtime thread) won't race with it.
+        let capturedConverter = converter
 
         let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -596,14 +690,21 @@ class SwiftGeminiBridge: NativeGeminiBridge {
             interleaved: true
         )!
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+        // Use nil format — lets the engine deliver its native post-VPIO format,
+        // which matches the converter's input format (both read after engine.start).
+        // Passing an explicit format that doesn't match the running input node
+        // causes the tap to deliver all-zero buffers.
+        let actualFormat = inputNode.outputFormat(forBus: 0)
+        print("SwiftGeminiBridge: Installing mic tap, inputNode format=\(actualFormat)")
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
             guard let self = self, let task = self.webSocketTask else { return }
 
             let chunkFrames: AVAudioFrameCount = 1600
             guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: chunkFrames) else { return }
 
             var error: NSError?
-            converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+            capturedConverter.convert(to: outputBuffer, error: &error) { _, outStatus in
                 outStatus.pointee = .haveData
                 return buffer
             }
@@ -612,6 +713,16 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
             let frameLength = Int(outputBuffer.frameLength)
             let data = Data(bytes: channelData[0], count: frameLength * 2)
+
+            self.micChunkCount += 1
+            if self.micChunkCount % 100 == 1 {
+                // Sample mic output to verify we're capturing real audio, not silence
+                var samples: [Int16] = []
+                let sampleCount = min(5, frameLength)
+                for i in 0..<sampleCount { samples.append(channelData[0][i]) }
+                let peak = samples.map { abs(Int32($0)) }.max() ?? 0
+                print("SwiftGeminiBridge: Mic chunk #\(self.micChunkCount), \(data.count)B, samples=\(samples), peak=\(peak)")
+            }
 
             // Send as binary WebSocket frame (server handles Frame.Binary)
             task.send(.data(data)) { sendError in

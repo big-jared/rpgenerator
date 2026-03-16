@@ -16,13 +16,29 @@ sealed class ServerMessage {
     data class GameEvent(val event: JsonObject) : ServerMessage()
     data class SceneImage(val data: ByteArray, val mimeType: String) : ServerMessage()
     data class StateUpdate(val state: JsonObject) : ServerMessage()
+    /** Single feed entry from server-side FeedStore */
+    data class Feed(val entry: FeedEntryDto) : ServerMessage()
+    /** Bulk feed sync (reconnection replay) */
+    data class FeedSync(val entries: List<FeedEntryDto>) : ServerMessage()
     data object TurnComplete : ServerMessage()
     data object Connected : ServerMessage()
     data object Interrupted : ServerMessage()
     data object Disconnected : ServerMessage()
     data class Error(val message: String) : ServerMessage()
-    data class OnboardingComplete(val seedId: String, val playerName: String, val backstory: String) : ServerMessage()
+    data class OnboardingComplete(val seedId: String, val playerName: String, val backstory: String, val portraitDescription: String = "") : ServerMessage()
 }
+
+/**
+ * Client-side representation of a server FeedEntry.
+ */
+@Serializable
+data class FeedEntryDto(
+    val id: Long,
+    val type: String,
+    val timestamp: Long,
+    val text: String? = null,
+    val metadata: JsonObject = JsonObject(emptyMap())
+)
 
 /**
  * Response from POST /api/game/create

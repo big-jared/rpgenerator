@@ -47,7 +47,8 @@ internal class GameOrchestrator(
     private val llm: LLMInterface,
     internal var gameState: GameState,
     private val toolContract: UnifiedToolContract,
-    private val resumeEvents: List<GameEvent> = emptyList()
+    private val resumeEvents: List<GameEvent> = emptyList(),
+    initialFoundation: StoryFoundation? = null
 ) {
     private val worldSeed = gameState.seedId?.let { WorldSeeds.byId(it) }
     private val isResumedGame = gameState.hasOpeningNarrationPlayed
@@ -102,11 +103,14 @@ internal class GameOrchestrator(
     }
 
     private val eventLog = mutableListOf<GameEvent>()
-    private var storyFoundation: StoryFoundation? = null
-    private var storyPlanningStarted = false
+    private var storyFoundation: StoryFoundation? = initialFoundation
+    private var storyPlanningStarted = initialFoundation != null
     private val backgroundScope = CoroutineScope(Dispatchers.Default)
     private var storyNPCsInitialized = false
-    private val storyFoundationDeferred = CompletableDeferred<StoryFoundation?>()
+    private val storyFoundationDeferred = CompletableDeferred<StoryFoundation?>().also {
+        // If we have a pre-loaded foundation (from DB on resume), complete immediately
+        if (initialFoundation != null) it.complete(initialFoundation)
+    }
     private var playerTurnCount = 0
     private var lastStoryCheckLevel = 0
 

@@ -46,7 +46,6 @@ class LyriaMusicService(
         val url = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateMusic?key=$apiKey"
         val request = Request.Builder()
             .url(url)
-            .header("x-goog-api-key", apiKey)
             .header("Content-Type", "application/json")
             .build()
 
@@ -63,7 +62,6 @@ class LyriaMusicService(
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                println("LyriaMusicService: onMessage: ${text.take(200)}")
                 try {
                     val msg = json.parseToJsonElement(text).jsonObject
 
@@ -76,7 +74,6 @@ class LyriaMusicService(
 
                     val serverContent = msg["server_content"]?.jsonObject ?: msg["serverContent"]?.jsonObject
                     if (serverContent != null) {
-                        println("LyriaMusicService: server_content keys: ${serverContent.keys}")
                         val chunks = serverContent["audioChunks"]?.jsonArray
                             ?: serverContent["audio_chunks"]?.jsonArray
                             ?: run { println("LyriaMusicService: No audioChunks found"); return }
@@ -115,10 +112,7 @@ class LyriaMusicService(
             }
 
             override fun onMessage(ws: WebSocket, bytes: okio.ByteString) {
-                // Lyria sends binary protobuf-like messages; decode as UTF-8 text
-                val text = bytes.utf8()
-                println("LyriaMusicService: onMessage(binary ${bytes.size} bytes): ${text.take(200)}")
-                onMessage(ws, text)
+                onMessage(ws, bytes.utf8())
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {

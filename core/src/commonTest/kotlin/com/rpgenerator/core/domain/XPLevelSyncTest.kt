@@ -26,17 +26,15 @@ class XPLevelSyncTest {
     @Test
     fun `level 1 to 2 requires 100 XP`() {
         val sheet = createSheet(level = 1, xp = 0)
-        // xpToNextLevel returns (level+1)*100, but calculateLevel threshold is level*100
-        // This inconsistency was the root cause of Bug 5/6 — RulesEngine used xpToNextLevel
-        // to predict level-ups but gainXP uses calculateLevel which has different thresholds.
-        assertEquals(200L, sheet.xpToNextLevel(), "xpToNextLevel at level 1 returns (1+1)*100=200")
+        // xpToNextLevel and calculateLevel now use the same formula: (level+1)*50 for levels < 5.
+        // At level 1: (1+1)*50 = 100.
+        assertEquals(100L, sheet.xpToNextLevel(), "xpToNextLevel at level 1 returns (1+1)*50=100")
 
-        // calculateLevel says level 1->2 needs 100 XP (xpRequired starts at 100)
         val at99 = sheet.gainXP(99)
         assertEquals(1, at99.level, "99 XP should not level up from level 1")
 
         val at100 = sheet.gainXP(100)
-        assertEquals(2, at100.level, "100 XP should level up to level 2 (calculateLevel threshold)")
+        assertEquals(2, at100.level, "100 XP should level up to level 2")
     }
 
     @Test
@@ -94,26 +92,24 @@ class XPLevelSyncTest {
     }
 
     @Test
-    fun `xpToNextLevel disagrees with calculateLevel - documents the inconsistency`() {
-        // xpToNextLevel() returns (level+1)*100 — at level 1, that's 200
-        // But calculateLevel() levels up at 100 XP (xpRequired = level*100 = 1*100)
-        // This means using xpToNextLevel() to predict level-ups is WRONG.
-        // This was the root cause of Bug 5/6 in GameOrchestrator.
+    fun `xpToNextLevel agrees with calculateLevel - bug is fixed`() {
+        // Both xpToNextLevel() and calculateLevel() now use the same formula:
+        // (level+1)*50 for levels < 5. At level 1, that's 100.
+        // The old inconsistency (Bug 5/6) has been fixed.
         val sheet = createSheet(level = 1, xp = 0)
 
         val xpGain = 100L
-        // Old RulesEngine prediction: newXP >= xpToNextLevel()
-        val wrongPrediction = (sheet.xp + xpGain) >= sheet.xpToNextLevel() // 100 >= 200 = false
+        // Prediction using xpToNextLevel: 100 >= 100 = true
+        val prediction = (sheet.xp + xpGain) >= sheet.xpToNextLevel()
         // Actual result from gainXP (uses calculateLevel)
         val actual = sheet.gainXP(xpGain)
-        val actualLevelUp = actual.level > sheet.level // true — actually levels up!
+        val actualLevelUp = actual.level > sheet.level
 
-        assertFalse(wrongPrediction, "xpToNextLevel-based prediction says NO level-up")
-        assertTrue(actualLevelUp, "But gainXP actually DOES level up")
-        // These disagree — proving the bug exists if you use xpToNextLevel for prediction.
-        // The fix: don't predict, just apply gainXP first and check the result.
-        assertNotEquals(wrongPrediction, actualLevelUp,
-            "xpToNextLevel prediction and gainXP should disagree, proving the bug")
+        assertTrue(prediction, "xpToNextLevel-based prediction says level-up")
+        assertTrue(actualLevelUp, "gainXP also levels up")
+        // They now agree — the bug is fixed.
+        assertEquals(prediction, actualLevelUp,
+            "xpToNextLevel prediction and gainXP should agree now that the bug is fixed")
     }
 
     @Test

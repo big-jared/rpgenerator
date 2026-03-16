@@ -15,6 +15,11 @@ import com.google.genai.types.LiveServerMessage
 /**
  * Handles WebSocket communication between the mobile app and Gemini Live API.
  *
+ * All game events, narration, player messages, tool results, and images are
+ * recorded in the session's FeedStore and pushed to the client as FeedEntry
+ * objects. The client is a dumb renderer — the server is the single source
+ * of truth for what appears in the feed.
+ *
  * Audio gating: only gate on toolCallPending (Gemini rejects input while
  * waiting for tool responses). The Live API handles interruptions natively —
  * no modelSpeaking or audioMuted gates needed.
@@ -39,6 +44,12 @@ object GameWebSocketHandler {
                             "connect" -> handleConnect(ws, session, msg)
                             "audio" -> if (!session.toolCallPending) handleAudio(session, msg)
                             "text" -> if (!session.toolCallPending) handleText(session, msg)
+                            "feed_request" -> {
+                                // Client reconnection: replay missed feed entries
+                                val afterId = msg["afterId"]?.jsonPrimitive?.longOrNull ?: 0L
+                                val entries = session.feedStore.since(afterId)
+                                ws.sendFeedSync(entries)
+                            }
                             "disconnect" -> {
                                 session.disconnect()
                                 ws.send("""{"type": "disconnected"}""")
@@ -51,7 +62,15 @@ object GameWebSocketHandler {
                         val params = LiveSendRealtimeInputParameters.builder()
                             .media(Blob.builder().mimeType("audio/pcm").data(frame.data))
                             .build()
-                        gemini.sendRealtimeInput(params)
+                        try {
+                            gemini.sendRealtimeInput(params)
+                        } catch (e: Exception) {
+                            // Gemini rejects realtime input during the latency window
+                            // between server-side tool call and our callback receiving it.
+                            // Gate further input and swallow the error.
+                            session.toolCallPending = true
+                            println("GameWSHandler: sendRealtimeInput rejected (binary), gating input: ${e.message}")
+                        }
                     }
                     else -> {}
                 }
@@ -68,12 +87,21 @@ object GameWebSocketHandler {
         msg: JsonObject
     ) {
         try {
-            val voiceName = msg["voiceName"]?.jsonPrimitive?.content ?: "Kore"
+            // Use the companion's configured voice for this world seed,
+            // falling back to the client-requested voice or default "Kore"
+            val companionVoice = session.game.getCompanionVoice()
+            val voiceName = if (companionVoice.isNotBlank()) companionVoice
+                else msg["voiceName"]?.jsonPrimitive?.content ?: "Kore"
+            val prompt = session.game.getSystemPrompt()
+            println("GameWSHandler: Connecting with voice=$voiceName, prompt (${prompt.length} chars):")
+            println("=== FULL SYSTEM PROMPT ===")
+            println(prompt)
+            println("=== END SYSTEM PROMPT ===")
             session.connectToGemini(voiceName = voiceName)
 
-            val gemini = session.geminiSession!!
-
             // Serialize all Gemini callbacks through a channel to preserve message ordering.
+            // NOTE: gemini.receive() is ASYNC — it registers a callback and returns immediately.
+            // Do NOT put it in a blocking loop.
             val messageChannel = Channel<LiveServerMessage>(Channel.UNLIMITED)
 
             session.scope.launch {
@@ -82,13 +110,15 @@ object GameWebSocketHandler {
                 }
             }
 
+            val gemini = session.geminiSession!!
+            println("GameWSHandler: Registering Gemini receive callback")
             gemini.receive { message ->
-                // Only gate on tool calls — Gemini rejects input during tool execution
                 if (message.toolCall().isPresent) {
                     session.toolCallPending = true
                 }
                 messageChannel.trySend(message)
             }
+            println("GameWSHandler: Gemini receive callback registered")
 
             // Start Lyria music streaming
             val apiKey = System.getenv("GOOGLE_API_KEY") ?: ""
@@ -127,12 +157,18 @@ object GameWebSocketHandler {
         val params = LiveSendRealtimeInputParameters.builder()
             .media(Blob.builder().mimeType("audio/pcm").data(pcm))
             .build()
-        gemini.sendRealtimeInput(params)
+        try {
+            gemini.sendRealtimeInput(params)
+        } catch (e: Exception) {
+            session.toolCallPending = true
+            println("GameWSHandler: sendRealtimeInput rejected (json audio), gating input: ${e.message}")
+        }
     }
 
     private suspend fun handleText(session: GameSession, msg: JsonObject) {
         val gemini = session.geminiSession ?: return
         val text = msg["content"]?.jsonPrimitive?.content ?: return
+        println("GameWSHandler: handleText: ${text.take(80)}")
 
         val params = LiveSendClientContentParameters.builder()
             .turnComplete(true)
@@ -151,6 +187,7 @@ object GameWebSocketHandler {
         session: GameSession,
         message: LiveServerMessage
     ) {
+        val feed = session.feedStore
         val hasToolCall = message.toolCall().isPresent
         val hasTurnComplete = message.serverContent().orElse(null)?.turnComplete()?.orElse(false) ?: false
         if (hasToolCall || hasTurnComplete) {
@@ -163,8 +200,12 @@ object GameWebSocketHandler {
             val funcNames = toolCall.functionCalls().orElse(emptyList()).mapNotNull { it.name().orElse(null) }
             println("GameWSHandler: TOOL CALL received: $funcNames")
             session.toolCallPending = true
+            // Flush narration and companion asides before tool execution
+            feed.flushNarration()?.let { ws.sendFeedEntry(it) }
+            feed.flushCompanion()?.let { ws.sendFeedEntry(it) }
             try {
                 handleToolCall(ws, session, toolCall)
+                println("GameWSHandler: Tool call complete, toolCallPending=false, resuming message processing")
             } finally {
                 session.toolCallPending = false
             }
@@ -174,6 +215,9 @@ object GameWebSocketHandler {
         val content = message.serverContent().orElse(null) ?: return
 
         if (content.interrupted().orElse(false)) {
+            // Flush any partial narration/companion before interruption
+            feed.flushNarration()?.let { ws.sendFeedEntry(it) }
+            feed.flushCompanion()?.let { ws.sendFeedEntry(it) }
             ws.send("""{"type": "interrupted"}""")
         }
 
@@ -185,6 +229,22 @@ object GameWebSocketHandler {
                 if (text != null) {
                     val cleaned = text.replace(Regex("<ctrl\\d+>"), "").trim()
                     if (cleaned.isNotEmpty() && !cleaned.startsWith("**")) {
+                        // Route to narration or companion aside based on whether
+                        // we're still reading back engine narration
+                        val narrative = session.lastNarrativeText
+                        if (narrative != null && !session.narrativeConsumed) {
+                            // Still reading engine narration — accumulate as narration
+                            feed.appendNarration(cleaned)
+                            // Check if we've consumed most of the narrative
+                            val narrationSoFar = feed.peekNarration()
+                            if (narrationSoFar.length >= narrative.length * 0.7) {
+                                session.narrativeConsumed = true
+                            }
+                        } else {
+                            // No pending narration or already consumed — this is companion aside
+                            feed.appendCompanion(cleaned)
+                        }
+                        // Send raw text for subtitles regardless
                         ws.send("""{"type": "text", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(cleaned))}}""")
                     }
                 }
@@ -196,37 +256,21 @@ object GameWebSocketHandler {
             }
         }
 
-        // Cancel silence watchdog when model is producing output
-        if (modelTurn != null || content.outputTranscription().isPresent) {
-            session.awaitingModelResponse = false
-            session.watchdogJob?.cancel()
-        }
 
-        // Input transcription
+        // Input transcription — player speech
         val inputText = content.inputTranscription().orElse(null)?.text()?.orElse(null)
         if (inputText != null) {
+            // Flush any pending narration when player starts speaking
+            feed.flushNarration()?.let { ws.sendFeedEntry(it) }
+
+            // Accumulate player speech
+            feed.appendPlayerSpeech(inputText)
+
             ws.send("""{"type": "transcript", "role": "user", "content": ${json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(inputText))}}""")
-            // Start silence watchdog — nudge model if it doesn't respond within 8s
-            session.awaitingModelResponse = true
-            session.watchdogJob?.cancel()
-            session.watchdogJob = session.scope.launch {
-                kotlinx.coroutines.delay(8000)
-                if (session.awaitingModelResponse && !session.toolCallPending) {
-                    println("GameWSHandler: Model silent for 8s after user input, sending nudge")
-                    val nudge = "[SYSTEM: The player is waiting for your response. Please respond with spoken audio now.]"
-                    val params = LiveSendClientContentParameters.builder()
-                        .turnComplete(false)
-                        .turns(Content.builder()
-                            .role("user")
-                            .parts(listOf(Part.builder().text(nudge).build()))
-                            .build())
-                        .build()
-                    session.geminiSession?.sendClientContent(params)
-                }
-            }
+
         }
 
-        // Output transcription
+        // Output transcription — just for subtitles, not the feed
         val outputText = content.outputTranscription().orElse(null)?.text()?.orElse(null)
         if (outputText != null) {
             val cleaned = outputText.replace(Regex("<ctrl\\d+>"), "").trim()
@@ -236,6 +280,21 @@ object GameWebSocketHandler {
         }
 
         if (content.turnComplete().orElse(false)) {
+            // Flush player speech, narration, and companion asides on turn complete
+            feed.flushPlayerSpeech()?.let { ws.sendFeedEntry(it) }
+            feed.flushNarration()?.let { ws.sendFeedEntry(it) }
+            // Determine companion name from world seed
+            val companionName = when (session.game.getCompanionVoice()) {
+                "Orus" -> "Hank"
+                "Puck" -> "Pip"
+                "Fenrir" -> "Glitch"
+                "Kore" -> "Bramble"
+                else -> "Companion"
+            }
+            feed.flushCompanion(companionName)?.let { ws.sendFeedEntry(it) }
+            // Reset narrative tracking for next turn
+            session.lastNarrativeText = null
+            session.narrativeConsumed = false
             ws.send("""{"type": "turn_complete"}""")
         }
     }
@@ -245,6 +304,7 @@ object GameWebSocketHandler {
         session: GameSession,
         toolCall: LiveServerToolCall
     ) {
+        val feed = session.feedStore
         val functionCalls = toolCall.functionCalls().orElse(emptyList())
         val responses = mutableListOf<FunctionResponse>()
 
@@ -253,9 +313,11 @@ object GameWebSocketHandler {
             val id = fc.id().orElse(name)
             val args = fc.args().orElse(emptyMap())
 
-            ws.send("""{"type": "tool_call", "name": "$name", "args": ${json.encodeToString(JsonObject.serializer(), buildJsonObject {
+            // Emit tool_call feed entry
+            val toolCallEntry = feed.append("tool_call", name, buildJsonObject {
                 args.forEach { (k, v) -> put(k, JsonPrimitive(v.toString())) }
-            })}}""")
+            })
+            ws.sendFeedEntry(toolCallEntry)
 
             val resultData: JsonObject = try {
                 if (name == "send_player_input") {
@@ -263,8 +325,7 @@ object GameWebSocketHandler {
                     val events = session.game.processInput(input).toList()
 
                     for (event in events) {
-                        val eventJson = json.encodeToString(GameEvent.serializer(), event)
-                        ws.send("""{"type": "game_event", "event": $eventJson}""")
+                        emitGameEventFeed(ws, session, event)
                     }
 
                     try {
@@ -284,14 +345,56 @@ object GameWebSocketHandler {
                                 is GameEvent.StatChange -> add("${event.statName}: ${event.oldValue} → ${event.newValue}")
                                 is GameEvent.ItemGained -> add("Gained item: ${event.itemName} x${event.quantity}")
                                 is GameEvent.QuestUpdate -> add("Quest '${event.questName}': ${event.status}")
-                                else -> {} // skip binary events (images, audio)
+                                is GameEvent.SceneImage -> add("[Scene Art: ${event.description}]")
+                                else -> {} // skip audio-only events
                             }
                         }
                     }.joinToString("\n")
 
+                    // Store narrative for companion aside detection
+                    session.lastNarrativeText = narrative
+                    session.narrativeConsumed = false
+
+                    // Auto-save after each player turn so resume works
+                    try { session.game.save() } catch (_: Exception) {}
+
                     buildJsonObject {
                         put("success", JsonPrimitive(true))
                         put("narrative", JsonPrimitive(narrative.ifEmpty { "Action processed." }))
+                    }
+                } else if (name == "generate_portrait") {
+                    val appearance = (args["appearance"] ?: args["description"] ?: "").toString()
+                    val charName = (args["characterName"] ?: "").toString()
+                    try {
+                        val imgResult = session.imageService.generatePortrait(
+                            PortraitRequest(name = charName, appearance = appearance)
+                        )
+                        if (imgResult is ImageResult.Success) {
+                            val b64 = Base64.getEncoder().encodeToString(imgResult.imageData)
+                            // Emit as scene_image feed entry
+                            val imgEntry = feed.append("scene_image", null, buildJsonObject {
+                                put("data", JsonPrimitive(b64))
+                                put("mimeType", JsonPrimitive(imgResult.mimeType))
+                                put("description", JsonPrimitive("Portrait of $charName"))
+                            })
+                            ws.sendFeedEntry(imgEntry)
+                            // Also send legacy scene_image for backward compat
+                            ws.send("""{"type": "scene_image", "data": "$b64", "mimeType": "${imgResult.mimeType}"}""")
+                            buildJsonObject {
+                                put("success", JsonPrimitive(true))
+                                put("description", JsonPrimitive("Portrait of $charName"))
+                            }
+                        } else {
+                            buildJsonObject {
+                                put("success", JsonPrimitive(false))
+                                put("error", JsonPrimitive("Portrait generation failed"))
+                            }
+                        }
+                    } catch (e: Exception) {
+                        buildJsonObject {
+                            put("success", JsonPrimitive(false))
+                            put("error", JsonPrimitive("Portrait generation error: ${e.message}"))
+                        }
                     }
                 } else {
                     val argsMap: Map<String, Any?> = args.mapValues { (_, value) ->
@@ -306,15 +409,22 @@ object GameWebSocketHandler {
                     val result = session.game.executeTool(name, argsMap)
 
                     for (event in result.events) {
-                        val eventJson = json.encodeToString(GameEvent.serializer(), event)
-                        ws.send("""{"type": "game_event", "event": $eventJson}""")
+                        emitGameEventFeed(ws, session, event)
                     }
 
-                    ws.send("""{"type": "tool_result", "name": "$name", "success": ${result.success}}""")
+                    // Emit tool_result feed entry
+                    val toolResultEntry = feed.append("tool_result", name, buildJsonObject {
+                        put("success", JsonPrimitive(result.success))
+                        result.data.let { put("data", it) }
+                        result.error?.let { put("error", JsonPrimitive(it)) }
+                    })
+                    ws.sendFeedEntry(toolResultEntry)
 
                     if (name == "shift_music_mood") {
                         val mood = argsMap["mood"]?.toString() ?: "peaceful"
                         session.lyriaMusicService?.setMood(mood)
+                        val moodEntry = feed.append("music_change", mood)
+                        ws.sendFeedEntry(moodEntry)
                     }
 
                     buildJsonObject {
@@ -326,6 +436,8 @@ object GameWebSocketHandler {
             } catch (e: Exception) {
                 println("GameWSHandler: Tool '$name' failed: ${e.message}")
                 e.printStackTrace()
+                val errorEntry = feed.append("system", "Tool '$name' failed: ${e.message}")
+                ws.sendFeedEntry(errorEntry)
                 buildJsonObject {
                     put("success", JsonPrimitive(false))
                     put("error", JsonPrimitive(e.message ?: "Unknown error"))
@@ -352,6 +464,115 @@ object GameWebSocketHandler {
             } catch (e: Exception) {
                 println("GameWSHandler: Failed to send tool response to Gemini: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Convert a GameEvent into one or more FeedEntry objects and push to the client.
+     */
+    private suspend fun emitGameEventFeed(
+        ws: DefaultWebSocketServerSession,
+        session: GameSession,
+        event: GameEvent
+    ) {
+        val feed = session.feedStore
+
+        when (event) {
+            is GameEvent.NarratorText -> {
+                val entry = feed.append("narration", event.text)
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.NPCDialogue -> {
+                val entry = feed.append("npc_dialogue", event.text, buildJsonObject {
+                    put("npcName", JsonPrimitive(event.npcName))
+                })
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.SystemNotification -> {
+                val entry = feed.append("system", event.text)
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.CombatLog -> {
+                val entry = feed.append("combat_action", event.text)
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.StatChange -> {
+                val entry = feed.append("stat_change", "${event.statName}: ${event.oldValue} → ${event.newValue}", buildJsonObject {
+                    put("statName", JsonPrimitive(event.statName))
+                    put("oldValue", JsonPrimitive(event.oldValue))
+                    put("newValue", JsonPrimitive(event.newValue))
+                })
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.ItemGained -> {
+                val entry = feed.append("item_gained", event.itemName, buildJsonObject {
+                    put("itemName", JsonPrimitive(event.itemName))
+                    put("quantity", JsonPrimitive(event.quantity))
+                })
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.QuestUpdate -> {
+                val entry = feed.append("quest_update", event.questName, buildJsonObject {
+                    put("questName", JsonPrimitive(event.questName))
+                    put("status", JsonPrimitive(event.status.name))
+                })
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.SceneImage -> {
+                if (event.description.isNotBlank()) {
+                    try {
+                        val state = session.game.getState()
+                        val imgResult = session.imageService.generateSceneArt(
+                            SceneArtRequest(
+                                locationName = state.location,
+                                description = event.description
+                            )
+                        )
+                        if (imgResult is ImageResult.Success) {
+                            val b64 = Base64.getEncoder().encodeToString(imgResult.imageData)
+                            val entry = feed.append("scene_image", null, buildJsonObject {
+                                put("data", JsonPrimitive(b64))
+                                put("mimeType", JsonPrimitive(imgResult.mimeType))
+                                put("description", JsonPrimitive(event.description))
+                            })
+                            ws.sendFeedEntry(entry)
+                            // Also send legacy scene_image for backward compat
+                            ws.send("""{"type": "scene_image", "data": "$b64", "mimeType": "${imgResult.mimeType}"}""")
+                        }
+                    } catch (e: Exception) {
+                        println("GameWSHandler: Scene art generation failed: ${e.message}")
+                    }
+                }
+            }
+            is GameEvent.NPCPortrait -> {
+                if (event.imageData.isNotEmpty()) {
+                    val b64 = Base64.getEncoder().encodeToString(event.imageData)
+                    val entry = feed.append("npc_portrait", null, buildJsonObject {
+                        put("npcName", JsonPrimitive(event.npcName))
+                        put("data", JsonPrimitive(b64))
+                    })
+                    ws.sendFeedEntry(entry)
+                }
+            }
+            is GameEvent.MusicChange -> {
+                val entry = feed.append("music_change", event.mood)
+                ws.sendFeedEntry(entry)
+            }
+            is GameEvent.ToolCallResults -> {
+                for (result in event.results) {
+                    val entry = feed.append("tool_result", result.toolName, buildJsonObject {
+                        put("success", JsonPrimitive(result.success))
+                        try {
+                            put("data", json.parseToJsonElement(result.data))
+                        } catch (_: Exception) {
+                            put("data", JsonPrimitive(result.data))
+                        }
+                    })
+                    ws.sendFeedEntry(entry)
+                }
+            }
+            is GameEvent.NarratorAudio -> {} // Audio handled separately via binary frames
+            is GameEvent.ItemIconGenerated -> {} // Not needed in feed
         }
     }
 }

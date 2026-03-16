@@ -22,8 +22,7 @@ internal class RPGClientImpl(
     private val plotRepository: PlotGraphRepository
 
     init {
-        // Create database schema if needed
-        GameDatabase.Schema.create(driver)
+        // Schema is already created by DriverFactory.createDriver() — no need to call again
         database = GameDatabase(driver)
         repository = GameRepository(database)
         plotRepository = PlotGraphRepository(database)
@@ -76,14 +75,18 @@ internal class RPGClientImpl(
         // Load recent events for agent context on resume
         val recentEvents = repository.getRecentEvents(gameInfo.id, limit = 30)
 
-        // Create game instance with event history
+        // Load story foundation so agents have full narrative context on resume
+        val foundation = plotRepository.loadStoryFoundation(gameInfo.id)
+
+        // Create game instance with full context
         val game = GameImpl(
             gameId = gameInfo.id,
             llm = llm,
             repository = repository,
             plotRepository = plotRepository,
             initialState = state,
-            resumeEvents = recentEvents
+            resumeEvents = recentEvents,
+            initialFoundation = foundation
         )
 
         // Set the playtime from saved data

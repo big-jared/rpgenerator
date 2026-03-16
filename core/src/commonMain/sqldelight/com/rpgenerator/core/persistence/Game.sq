@@ -93,6 +93,18 @@ CREATE TABLE IF NOT EXISTS TrajectoryAnalysis (
 );
 
 -- ========================================
+-- STORY FOUNDATION PERSISTENCE
+-- ========================================
+
+-- Table for storing StoryFoundation (JSON serialized)
+-- Loaded on resume so agents have full narrative context
+CREATE TABLE IF NOT EXISTS StoryFoundation (
+    gameId TEXT PRIMARY KEY NOT NULL,
+    foundationJson TEXT NOT NULL,
+    FOREIGN KEY (gameId) REFERENCES Game(id) ON DELETE CASCADE
+);
+
+-- ========================================
 -- PLOT GRAPH PERSISTENCE SYSTEM
 -- ========================================
 
@@ -605,6 +617,17 @@ DELETE FROM AgentConsolidation WHERE gameId = ?;
 -- ========================================
 -- PLOT GRAPH QUERIES
 -- ========================================
+
+-- StoryFoundation queries
+selectStoryFoundation:
+SELECT * FROM StoryFoundation WHERE gameId = ?;
+
+insertStoryFoundation:
+INSERT OR REPLACE INTO StoryFoundation (gameId, foundationJson)
+VALUES (?, ?);
+
+deleteStoryFoundation:
+DELETE FROM StoryFoundation WHERE gameId = ?;
 
 -- PlotGraph queries
 selectPlotGraph:

@@ -50,9 +50,16 @@ object McpHandler {
     /** Get a single cached image by ID */
     fun getCachedImage(id: String): GeneratedImage? = imageCache[id]
 
+    private const val MAX_CACHED_IMAGES = 100
+
     private fun cacheImage(type: String, label: String, imageData: ByteArray, mimeType: String, prompt: String): String {
         val id = "img_${++imageCounter}"
         imageCache[id] = GeneratedImage(id, type, label, imageData, mimeType, prompt)
+        // Evict oldest entries when cache exceeds limit
+        if (imageCache.size > MAX_CACHED_IMAGES) {
+            val oldest = imageCache.values.sortedBy { it.timestamp }.take(imageCache.size - MAX_CACHED_IMAGES)
+            oldest.forEach { imageCache.remove(it.id) }
+        }
         return id
     }
 

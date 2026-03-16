@@ -41,6 +41,12 @@ abstract class Game internal constructor(
     open fun getEventLog(): List<GameEvent> = emptyList()
 
     /**
+     * Get events loaded from the database on resume.
+     * Used by the server to pre-populate the client feed.
+     */
+    open fun getResumeEvents(): List<GameEvent> = emptyList()
+
+    /**
      * Get the full tool call log for this session.
      * Returns every tool call with args, result, timing, and caller info.
      */

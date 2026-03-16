@@ -32,7 +32,8 @@ internal class GameImpl(
     private val repository: GameRepository,
     private val plotRepository: PlotGraphRepository,
     initialState: GameState,
-    private val resumeEvents: List<GameEvent> = emptyList()
+    private val resumeEvents: List<GameEvent> = emptyList(),
+    private val initialFoundation: StoryFoundation? = null
 ) : Game(gameId, llm) {
 
     private val monsterGenerator by lazy { MonsterGeneratorAgent(llm) }
@@ -50,7 +51,7 @@ internal class GameImpl(
         classGenerator = classGenerator,
         skillGenerator = skillGenerator
     )
-    private val orchestrator = GameOrchestrator(llm, initialState, toolContract, resumeEvents)
+    private val orchestrator = GameOrchestrator(llm, initialState, toolContract, resumeEvents, initialFoundation)
     private var sessionStartTime = currentTimeMillis()
     private var sessionPlaytime = 0L
     private var plotGraphSaved = false
@@ -60,9 +61,10 @@ internal class GameImpl(
             // Log each event to the database
             repository.logEvent(id, event)
 
-            // Save plot graph after story planning completes (first input)
+            // Save story foundation + plot graph after story planning completes (first input)
             if (!plotGraphSaved) {
                 orchestrator.getStoryFoundation()?.let { foundation ->
+                    plotRepository.saveStoryFoundation(id, foundation)
                     plotRepository.savePlotGraph(foundation.plotGraph)
                     plotGraphSaved = true
                 }
@@ -166,12 +168,18 @@ internal class GameImpl(
         sessionPlaytime += sessionDuration
         sessionStartTime = currentTime
 
-        // Save to database
+        // Save game state
         repository.saveGame(
             gameId = id,
             state = orchestrator.getState(),
             playtime = sessionPlaytime
         )
+
+        // Save story foundation + plot graph so resume has full narrative context
+        orchestrator.getStoryFoundation()?.let { foundation ->
+            plotRepository.saveStoryFoundation(id, foundation)
+            plotRepository.savePlotGraph(foundation.plotGraph)
+        }
     }
 
     /**
@@ -203,6 +211,8 @@ internal class GameImpl(
     override fun getEventLog(): List<GameEvent> {
         return orchestrator.getEventLog()
     }
+
+    override fun getResumeEvents(): List<GameEvent> = resumeEvents
 
     override fun getToolCallLog(): List<Map<String, Any?>> {
         return toolContract.toolCallLog.map { entry ->
@@ -308,7 +318,7 @@ internal class GameImpl(
 
     override fun getCompanionVoice(): String {
         return when (orchestrator.getState().seedId) {
-            "integration" -> "Charon"  // Deep, gruff — fits Hank the man-fairy
+            "integration" -> "Orus"    // Firm, deliberate — fits Hank the grumpy Brooklyn fairy
             "tabletop" -> "Puck"       // Bright, energetic — fits Pip the ink sprite
             "crawler" -> "Fenrir"      // Hushed, tense — fits Glitch the drone
             "quiet_life" -> "Kore"     // Warm, gentle — fits Bramble the forest spirit

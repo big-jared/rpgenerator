@@ -4,6 +4,9 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,17 +33,19 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 internal fun OnboardingContent(
-    transcript: String = "",
+    messages: List<OnboardingMessage> = emptyList(),
     isMusicEnabled: Boolean = true,
     errorMessage: String? = null,
     onBack: () -> Unit = {},
     onMusicToggle: () -> Unit = {}
 ) {
-    val scrollState = rememberScrollState()
-    val hasTranscript = transcript.isNotBlank()
+    val listState = rememberLazyListState()
+    val hasMessages = messages.isNotEmpty()
 
-    LaunchedEffect(transcript) {
-        scrollState.animateScrollTo(scrollState.maxValue)
+    LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -63,7 +68,7 @@ internal fun OnboardingContent(
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
-                .padding(bottom = if (hasTranscript) 140.dp else 0.dp),
+                .padding(bottom = if (hasMessages) 140.dp else 0.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(
@@ -116,7 +121,7 @@ internal fun OnboardingContent(
                 color = AppColors.surface
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    if (!hasTranscript) {
+                    if (!hasMessages) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -140,23 +145,13 @@ internal fun OnboardingContent(
                             )
                         }
                     } else {
-                        Text(
-                            text = transcript,
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                color = AppColors.textPrimary,
-                                lineHeight = 26.sp
-                            ),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scrollState)
-                                .padding(16.dp)
-                        )
+                        OnboardingChatList(messages = messages, listState = listState)
                     }
                 }
             }
         }
 
-        if (hasTranscript) {
+        if (hasMessages) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -208,14 +203,60 @@ internal fun OnboardingContent(
 }
 
 @Composable
+private fun OnboardingChatList(
+    messages: List<OnboardingMessage>,
+    listState: androidx.compose.foundation.lazy.LazyListState
+) {
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items(messages) { msg ->
+            val isUser = msg.role == "user"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(
+                        topStart = 12.dp,
+                        topEnd = 12.dp,
+                        bottomStart = if (isUser) 12.dp else 4.dp,
+                        bottomEnd = if (isUser) 4.dp else 12.dp
+                    ),
+                    color = if (isUser) AppColors.bronze.copy(alpha = 0.15f) else AppColors.background,
+                    modifier = Modifier.widthIn(max = 280.dp)
+                ) {
+                    Text(
+                        text = msg.text,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = AppColors.textPrimary,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun OnboardingScreen(viewModel: GameViewModel) {
     val uiState by viewModel.uiState.collectAsState()
-    val scrollState = rememberScrollState()
-    val hasTranscript = uiState.onboardingTranscript.isNotBlank()
+    val listState = rememberLazyListState()
+    val messages = uiState.onboardingMessages
+    val hasMessages = messages.isNotEmpty()
 
-    // Auto-scroll when transcript updates
-    LaunchedEffect(uiState.onboardingTranscript) {
-        scrollState.animateScrollTo(scrollState.maxValue)
+    // Auto-scroll when messages update
+    LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
+        if (messages.isNotEmpty()) {
+            kotlinx.coroutines.delay(50)
+            listState.animateScrollToItem(messages.lastIndex)
+        }
     }
 
     // Pulsing alpha for "Connecting..." text
@@ -239,7 +280,7 @@ fun OnboardingScreen(viewModel: GameViewModel) {
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
-                .padding(bottom = if (hasTranscript) 140.dp else 0.dp),
+                .padding(bottom = if (hasMessages) 140.dp else 0.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Top bar — back + music toggle
@@ -290,7 +331,7 @@ fun OnboardingScreen(viewModel: GameViewModel) {
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Transcript area
+            // Chat messages area
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -300,7 +341,7 @@ fun OnboardingScreen(viewModel: GameViewModel) {
                 color = AppColors.surface
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    if (!hasTranscript) {
+                    if (!hasMessages) {
                         // Connecting state — pulsing indicator
                         Column(
                             modifier = Modifier
@@ -325,24 +366,14 @@ fun OnboardingScreen(viewModel: GameViewModel) {
                             )
                         }
                     } else {
-                        Text(
-                            text = uiState.onboardingTranscript,
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                                color = AppColors.textPrimary,
-                                lineHeight = 26.sp
-                            ),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scrollState)
-                                .padding(16.dp)
-                        )
+                        OnboardingChatList(messages = messages, listState = listState)
                     }
                 }
             }
         }
 
-        // Bottom bar — text input + stop button
-        if (hasTranscript) {
+        // Bottom bar — stop button
+        if (hasMessages) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

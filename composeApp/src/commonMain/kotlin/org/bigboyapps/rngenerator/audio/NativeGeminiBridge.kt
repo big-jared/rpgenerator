@@ -19,7 +19,9 @@ interface GeminiMessageCallback {
     fun onConnected()
     fun onDisconnected()
     fun onError(message: String)
-    fun onOnboardingComplete(seedId: String, playerName: String, backstory: String)
+    fun onOnboardingComplete(seedId: String, playerName: String, backstory: String, portraitDescription: String)
+    /** Raw feed/feed_sync JSON from server — parsed on Kotlin side */
+    fun onFeedMessage(json: String)
 }
 
 interface NativeGeminiBridge {

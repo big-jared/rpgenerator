@@ -2247,6 +2247,32 @@ internal class UnifiedToolContractImpl(
     }
 
     private fun completeTutorial(state: GameState): ToolOutcome {
+        // Guard: tutorial is ALL of Act 1 (levels 1-25). It ends when the player
+        // reaches level 25 and defeats the Apex Boss at the top of the Spire.
+        val MIN_TUTORIAL_LEVEL = 25
+        val playerLevel = state.playerLevel
+        val hasClass = state.characterSheet.playerClass != com.rpgenerator.core.domain.PlayerClass.NONE
+        val hasSkills = state.characterSheet.skills.isNotEmpty()
+        // Check if the Apex Boss has been defeated (the tutorial's final boss)
+        val defeatedApex = toolCallLog.any {
+            (it.toolName == "attack_target" || it.toolName == "combat_use_skill") &&
+                it.resultSummary?.contains("Apex", ignoreCase = true) == true &&
+                it.resultSummary?.contains("defeated", ignoreCase = true) == true
+        }
+        if (playerLevel < MIN_TUTORIAL_LEVEL || !hasClass || !hasSkills || !defeatedApex) {
+            return ToolOutcome(
+                success = false,
+                data = buildJsonObject {
+                    put("error", JsonPrimitive(
+                        "Tutorial not ready to complete. The tutorial spans levels 1-25 (all of Act 1). " +
+                        "Requirements: level 25+ (current: $playerLevel), class chosen ($hasClass), " +
+                        "skills granted ($hasSkills), Apex Boss defeated ($defeatedApex). " +
+                        "Continue the adventure — there are zones to explore, bosses to fight, and a Spire to climb."
+                    ))
+                }
+            )
+        }
+
         var newState = state.copy(hasOpeningNarrationPlayed = true)
         val events = mutableListOf<GameEvent>(GameEvent.SystemNotification("Tutorial complete!"))
 
@@ -2872,7 +2898,7 @@ internal class UnifiedToolContractImpl(
             ToolParam("skillName", "string", "Display name for a custom skill (required if skillId not in database)", required = false),
             ToolParam("description", "string", "Description for a custom skill", required = false)
         )),
-        UnifiedToolDef("complete_tutorial", "Mark the tutorial as complete"),
+        UnifiedToolDef("complete_tutorial", "Mark the tutorial as complete. The tutorial is the ENTIRE Act 1 (levels 1-25). ONLY call after the player has: 1) reached level 25, 2) chosen a class, 3) received skills, AND 4) defeated the Apex Boss at the top of the Spire. Do NOT call early — the tutorial has 4 zones, 4 zone bosses, and a 10-floor Spire to climb."),
 
         // Plot graph
         UnifiedToolDef("create_plot_node", "Create a dynamic story beat in the plot graph. Use when the player's choices create new narrative threads.", listOf(

@@ -152,6 +152,21 @@ class GameApiClient(
     }
 
     /**
+     * Get recent feed entries for pre-populating the feed on load/resume.
+     */
+    suspend fun fetchEvents(sessionId: String, limit: Int = 50, authToken: String? = null): List<FeedEntryDto> {
+        log.d { "🌐 fetchEvents: sessionId=$sessionId, limit=$limit" }
+        val response = client.get("$baseUrl/api/game/$sessionId/events?limit=$limit") {
+            if (authToken != null) {
+                header(HttpHeaders.Authorization, "Bearer $authToken")
+            }
+        }
+        checkResponse(response, "fetchEvents")
+        val body = response.bodyAsText()
+        return json.decodeFromString(body)
+    }
+
+    /**
      * Generate player portrait via the tool execution endpoint.
      */
     suspend fun generatePortrait(

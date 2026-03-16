@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -57,10 +58,14 @@ private fun findPortrait(slug: String): DrawableResource? {
 fun NpcPortraitImage(
     name: String,
     modifier: Modifier = Modifier,
-    size: Dp = 40.dp
+    size: Dp = 40.dp,
+    generatedPortrait: ByteArray? = null
 ) {
     val slug = npcNameToSlug(name)
     val resource = findPortrait(slug)
+    val generatedBitmap: ImageBitmap? = generatedPortrait?.let {
+        try { decodeImageBytes(it) } catch (_: Exception) { null }
+    }
 
     Box(
         modifier = modifier
@@ -75,7 +80,15 @@ fun NpcPortraitImage(
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (resource != null) {
+        if (generatedBitmap != null) {
+            // Generated portrait takes priority
+            Image(
+                bitmap = generatedBitmap,
+                contentDescription = "$name portrait",
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+                contentScale = ContentScale.Crop
+            )
+        } else if (resource != null) {
             Image(
                 painter = painterResource(resource),
                 contentDescription = "$name portrait",

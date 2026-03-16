@@ -335,11 +335,15 @@ class UnifiedToolContractImplTest {
     }
 
     @Test
-    fun setClass_failsForUnknownClass() = runTest {
+    fun setClass_fallsBackToAdapterForUnknownClass() = runTest {
         val state = testState()
         val result = contract.executeTool("set_class", mapOf("className" to "BANANA_WARRIOR"), state)
 
-        assertFalse(result.success)
+        // set_class accepts ANY name — unknown classes resolve to the ADAPTER archetype
+        // for combat math, while preserving the creative class name for display.
+        assertTrue(result.success)
+        assertNotNull(result.newState)
+        assertEquals(PlayerClass.ADAPTER, result.newState!!.characterSheet.playerClass)
     }
 
     // ── Profession Tests ──────────────────────────────────────────

@@ -1,6 +1,8 @@
 package org.bigboyapps.rngenerator.ui
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,6 +51,7 @@ fun GameScreen(viewModel: GameViewModel) {
     var showMenu by remember { mutableStateOf(false) }
     var showHud by remember { mutableStateOf(false) }
     var hudInitialTab by remember { mutableStateOf(HudTab.CHARACTER) }
+    var showCompanionSheet by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(uiState.feedItems.size) {
@@ -80,18 +83,25 @@ fun GameScreen(viewModel: GameViewModel) {
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             items(items = uiState.feedItems, key = { it.id }) { item ->
-                FeedItemView(item)
+                FeedItemView(item, uiState.npcPortraits)
             }
         }
 
-        // Control bar
+        // Control bar with speaking avatars
         ControlBar(
             isListening = uiState.isListening,
             isGeminiSpeaking = uiState.isGeminiSpeaking,
             isMusicEnabled = uiState.isMusicEnabled,
+            companionName = companionNameForSeed(uiState.currentSeedId),
+            playerAvatarBytes = uiState.playerAvatarBytes,
             onMicPressed = viewModel::onMicPressed,
             onMenuPressed = { showMenu = true },
             onMusicToggle = viewModel::toggleMusic,
+            onCompanionClick = { showCompanionSheet = true },
+            onPlayerClick = {
+                hudInitialTab = HudTab.CHARACTER
+                showHud = true
+            },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
@@ -153,6 +163,14 @@ fun GameScreen(viewModel: GameViewModel) {
             onDismiss = { viewModel.dismissNpcDetails() }
         )
     }
+
+    if (showCompanionSheet) {
+        LaunchedEffect(Unit) { viewModel.fetchCharacterSheet() }
+        CompanionSheet(
+            seedId = uiState.currentSeedId,
+            onDismiss = { showCompanionSheet = false }
+        )
+    }
 }
 
 // ── Parchment Background ─────────────────────────────────────────
@@ -181,26 +199,28 @@ fun Modifier.parchmentBackground() = this
 // ── Feed Item Renderers ──────────────────────────────────────────
 
 @Composable
-internal fun PreviewFeedItemView(item: FeedItem) = FeedItemView(item)
+internal fun PreviewFeedItemView(item: FeedItem) = FeedItemView(item, emptyMap())
 
 @Composable
-private fun FeedItemView(item: FeedItem) {
+private fun FeedItemView(item: FeedItem, npcPortraits: Map<String, ByteArray> = emptyMap()) {
     when (item) {
         is FeedItem.SceneImage -> SceneImageCard(item)
         is FeedItem.Narration -> NarrationBlock(item)
         is FeedItem.PlayerMessage -> PlayerBubble(item)
-        is FeedItem.NpcDialogue -> NpcDialogueBubble(item)
+        is FeedItem.NpcDialogue -> NpcDialogueBubble(item, npcPortraits)
         is FeedItem.XpGain -> XpNotification(item)
         is FeedItem.ItemGained -> ItemNotification(item)
         is FeedItem.GoldGained -> GoldNotification(item)
         is FeedItem.QuestUpdate -> QuestNotification(item)
         is FeedItem.LevelUp -> LevelUpCard(item)
         is FeedItem.SystemNotice -> SystemNoticeBlock(item)
-        is FeedItem.CompanionAside -> CompanionAsideBubble(item)
+        is FeedItem.CompanionAside -> CompanionAsideBubble(item, npcPortraits)
         is FeedItem.CombatStart -> CombatEncounterCard(item)
         is FeedItem.CombatEnd -> CombatEndCard(item)
         is FeedItem.CombatAction -> CombatActionLine(item)
         is FeedItem.LocationChange -> LocationChangeHeader(item)
+        is FeedItem.ToolResultCard -> ToolResultCardView(item)
+        is FeedItem.MoodShift -> MoodShiftIndicator(item)
     }
 }
 
@@ -770,15 +790,16 @@ private fun PlayerBubble(item: FeedItem.PlayerMessage) {
 // ── NPC Dialogue ─────────────────────────────────────────────────
 
 @Composable
-private fun NpcDialogueBubble(item: FeedItem.NpcDialogue) {
+private fun NpcDialogueBubble(item: FeedItem.NpcDialogue, npcPortraits: Map<String, ByteArray> = emptyMap()) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // NPC portrait
+        // NPC portrait (generated portrait takes priority over bundled resource)
         NpcPortraitImage(
             name = item.npcName,
-            size = 44.dp
+            size = 44.dp,
+            generatedPortrait = npcPortraits[item.npcName.lowercase()]
         )
 
         Column(modifier = Modifier.weight(1f)) {
@@ -989,10 +1010,77 @@ private fun SystemNoticeBlock(item: FeedItem.SystemNotice) {
     )
 }
 
+// ── Tool Result Card ─────────────────────────────────────────────
+
+@Composable
+private fun ToolResultCardView(item: FeedItem.ToolResultCard) {
+    val icon = when {
+        item.toolName.contains("class") || item.toolName.contains("profession") -> "⚔"
+        item.toolName.contains("skill") || item.toolName == "acquire_skill" -> "✦"
+        item.toolName.contains("stat") || item.toolName == "allocate_stat_points" -> "◆"
+        item.toolName.contains("equip") -> "🛡"
+        item.toolName.contains("location") || item.toolName == "generate_location" -> "🗺"
+        item.toolName.contains("npc") || item.toolName == "generate_npc" -> "👤"
+        item.toolName.contains("quest") -> "📜"
+        item.toolName.contains("item") || item.toolName == "use_item" -> "✧"
+        item.toolName == "complete_tutorial" -> "⭐"
+        item.toolName.contains("name") -> "📛"
+        else -> "▸"
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 3.dp)
+            .border(1.dp, AppColors.bronze.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+            .background(AppColors.bronze.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = icon,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.label,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = AppColors.bronze
+                )
+            )
+            if (item.details.isNotBlank()) {
+                Text(
+                    text = item.details,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = AppColors.inkFaded
+                    )
+                )
+            }
+        }
+    }
+}
+
+// ── Mood Shift Indicator ─────────────────────────────────────────
+
+@Composable
+private fun MoodShiftIndicator(item: FeedItem.MoodShift) {
+    Text(
+        text = "♪ ${item.mood}",
+        style = MaterialTheme.typography.bodySmall.copy(
+            color = AppColors.inkFaded.copy(alpha = 0.6f),
+            fontStyle = FontStyle.Italic
+        ),
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+    )
+}
+
 // ── Companion Aside ──────────────────────────────────────────────
 
 @Composable
-private fun CompanionAsideBubble(item: FeedItem.CompanionAside) {
+private fun CompanionAsideBubble(item: FeedItem.CompanionAside, npcPortraits: Map<String, ByteArray> = emptyMap()) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1000,7 +1088,8 @@ private fun CompanionAsideBubble(item: FeedItem.CompanionAside) {
         // Companion portrait
         NpcPortraitImage(
             name = item.companionName,
-            size = 36.dp
+            size = 36.dp,
+            generatedPortrait = npcPortraits[item.companionName.lowercase()]
         )
 
         Column(modifier = Modifier.weight(1f)) {
@@ -1172,13 +1261,29 @@ private fun MenuItem(
 // ── Control Bar ──────────────────────────────────────────────────
 
 @Composable
+/**
+ * Map world seed ID to companion name.
+ */
+internal fun companionNameForSeed(seedId: String): String = when (seedId) {
+    "integration" -> "Hank"
+    "tabletop" -> "Pip"
+    "crawler" -> "Glitch"
+    "quiet_life" -> "Bramble"
+    else -> "Companion"
+}
+
+@Composable
 internal fun ControlBar(
     isListening: Boolean,
     isGeminiSpeaking: Boolean,
     isMusicEnabled: Boolean,
+    companionName: String,
+    playerAvatarBytes: ByteArray?,
     onMicPressed: () -> Unit,
     onMenuPressed: () -> Unit,
     onMusicToggle: () -> Unit,
+    onCompanionClick: () -> Unit = {},
+    onPlayerClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -1204,12 +1309,20 @@ internal fun ControlBar(
                 .background(AppColors.parchmentEdge.copy(alpha = 0.5f))
         )
 
-        // Button row
+        // Button row with speaking avatars
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Companion avatar — lights up when Gemini is speaking
+            SpeakingAvatar(
+                name = companionName,
+                isSpeaking = isGeminiSpeaking,
+                avatarBytes = null, // Use NPC portrait system
+                useNpcPortrait = true,
+                onClick = onCompanionClick
+            )
 
             // Session button — shows listening state, tap to stop
             val ringColor = when {
@@ -1270,6 +1383,15 @@ internal fun ControlBar(
                 }
             }
 
+            // Player avatar — lights up when player is speaking (listening)
+            SpeakingAvatar(
+                name = "You",
+                isSpeaking = isListening && !isGeminiSpeaking,
+                avatarBytes = playerAvatarBytes,
+                useNpcPortrait = false,
+                onClick = onPlayerClick
+            )
+
             // Music toggle
             IconButton(onClick = onMusicToggle) {
                 Icon(
@@ -1286,6 +1408,328 @@ internal fun ControlBar(
                     contentDescription = "Menu",
                     tint = AppColors.inkFaded
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Speaking avatar indicator — circular portrait with animated glow ring when active.
+ */
+@Composable
+internal fun SpeakingAvatar(
+    name: String,
+    isSpeaking: Boolean,
+    avatarBytes: ByteArray?,
+    useNpcPortrait: Boolean,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (isSpeaking) 0.8f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "avatarGlow"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(52.dp)
+                .drawBehind {
+                    if (glowAlpha > 0f) {
+                        // Animated glow ring
+                        drawCircle(
+                            color = AppColors.gold.copy(alpha = glowAlpha * 0.4f),
+                            radius = size.minDimension / 2 + 6f
+                        )
+                        drawCircle(
+                            color = AppColors.gold.copy(alpha = glowAlpha),
+                            radius = size.minDimension / 2 + 2f,
+                            style = Stroke(width = 2.5f)
+                        )
+                    }
+                }
+        ) {
+            if (useNpcPortrait) {
+                NpcPortraitImage(
+                    name = name,
+                    size = 44.dp
+                )
+            } else {
+                // Player avatar
+                val bitmap: ImageBitmap? = avatarBytes?.let {
+                    try { decodeImageBytes(it) } catch (_: Exception) { null }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .border(
+                            width = 2.dp,
+                            brush = Brush.sweepGradient(
+                                listOf(AppColors.bronze, AppColors.gold, AppColors.bronzeLight, AppColors.bronze)
+                            ),
+                            shape = CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap,
+                            contentDescription = "Player avatar",
+                            modifier = Modifier.fillMaxSize().clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(AppColors.bronze.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = "Player",
+                                tint = AppColors.bronze,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            text = name,
+            style = MaterialTheme.typography.labelSmall.copy(
+                color = if (isSpeaking) AppColors.gold else AppColors.inkFaded,
+                fontSize = 10.sp
+            )
+        )
+    }
+}
+
+// ── Companion Data ──────────────────────────────────────────────
+
+private data class CompanionData(
+    val name: String,
+    val title: String,
+    val description: String,
+    val personality: String,
+    val classInfo: String,
+    val voice: String
+)
+
+private fun companionDataForSeed(seedId: String): CompanionData = when (seedId) {
+    "integration" -> CompanionData(
+        name = "Hank",
+        title = "System Fairy (Grudging)",
+        description = "A grumpy, foul-mouthed fairy from Brooklyn who got assigned to you by the System. He didn't ask for this. You didn't ask for this. And yet here you both are.",
+        personality = "Sarcastic, blunt, secretly loyal. Uses profanity like punctuation. Gives terrible advice that somehow works. Hides genuine concern behind a wall of insults.",
+        classInfo = "System Guide — provides tutorial hints, combat tips, and running commentary on your poor life choices.",
+        voice = "Orus"
+    )
+    "tabletop" -> CompanionData(
+        name = "Pip",
+        title = "Ink Sprite",
+        description = "A tiny sprite made of living ink who escaped from a storybook. Pip narrates your adventure like it's the greatest epic ever written — even when you're just buying bread.",
+        personality = "Enthusiastic, dramatic, literary. Speaks in narrative prose. Gets emotionally invested in side quests. Cries at beautiful sunsets. Treats every NPC like a potential main character.",
+        classInfo = "Lore Keeper — tracks story threads, remembers NPC names you forgot, and provides dramatic narration.",
+        voice = "Puck"
+    )
+    "crawler" -> CompanionData(
+        name = "Glitch",
+        title = "Rogue Drone",
+        description = "A malfunctioning camera drone from the Dungeon Network's reality show. Supposed to be filming your death for ratings. Instead, it started rooting for you.",
+        personality = "Deadpan, cynical, accidentally wholesome. Speaks in broadcast jargon. Gives combat odds like a sports commentator. Gets genuinely upset when you almost die.",
+        classInfo = "Scout — scans rooms ahead, provides enemy stats, and offers sarcastic play-by-play commentary.",
+        voice = "Fenrir"
+    )
+    "quiet_life" -> CompanionData(
+        name = "Bramble",
+        title = "Forest Spirit",
+        description = "A gentle forest spirit who adopted you after the wars ended. Bramble tends to your garden, talks to your chickens, and worries about you constantly.",
+        personality = "Warm, nurturing, quietly fierce. Speaks softly but firmly. Knows every plant by name. Will fight a bear if it threatens your tomatoes.",
+        classInfo = "Nature's Hand — helps with farming, foraging, animal care, and the occasional monster that wanders too close to the homestead.",
+        voice = "Kore"
+    )
+    else -> CompanionData(
+        name = "Companion",
+        title = "Guide",
+        description = "Your assigned companion for this adventure.",
+        personality = "Helpful and attentive.",
+        classInfo = "Guide — assists with navigation and advice.",
+        voice = "Kore"
+    )
+}
+
+// ── Companion Sheet ─────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CompanionSheet(seedId: String, onDismiss: () -> Unit) {
+    val companion = companionDataForSeed(seedId)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Color.Transparent,
+        contentColor = AppColors.inkDark,
+        dragHandle = null
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.75f)
+                .padding(horizontal = 8.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(AppColors.parchmentLight, AppColors.parchment, AppColors.parchmentDark)
+                    ),
+                    RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                )
+                .border(
+                    width = 2.dp,
+                    brush = Brush.verticalGradient(listOf(AppColors.parchmentEdge, AppColors.bronze.copy(alpha = 0.4f))),
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                )
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+                contentPadding = PaddingValues(vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Drag handle
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(3.dp)
+                                .background(AppColors.parchmentEdge, RoundedCornerShape(2.dp))
+                        )
+                    }
+                }
+
+                // Portrait + Name
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .drawBehind {
+                                    val s = size.minDimension
+                                    drawCircle(
+                                        brush = Brush.sweepGradient(
+                                            listOf(AppColors.gold, AppColors.bronzeLight, AppColors.gold, AppColors.bronze)
+                                        ),
+                                        radius = s / 2,
+                                        style = Stroke(width = 4f)
+                                    )
+                                    drawCircle(
+                                        color = AppColors.bronzeDark,
+                                        radius = s / 2 - 5f,
+                                        style = Stroke(width = 1.5f)
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            NpcPortraitImage(
+                                name = companion.name,
+                                size = 58.dp
+                            )
+                        }
+
+                        Column {
+                            Text(
+                                text = companion.name,
+                                style = MaterialTheme.typography.headlineMedium.copy(
+                                    color = AppColors.gold
+                                )
+                            )
+                            Text(
+                                text = companion.title,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = AppColors.inkFaded,
+                                    fontStyle = FontStyle.Italic
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Description
+                item {
+                    Text(
+                        text = companion.description,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            color = AppColors.inkDark,
+                            lineHeight = 24.sp
+                        )
+                    )
+                }
+
+                // Divider
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .height(1.dp)
+                            .background(AppColors.parchmentEdge.copy(alpha = 0.5f))
+                    )
+                }
+
+                // Personality
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Personality",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = AppColors.bronze,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                        Text(
+                            text = companion.personality,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = AppColors.inkMedium,
+                                lineHeight = 22.sp
+                            )
+                        )
+                    }
+                }
+
+                // Role
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Role",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = AppColors.bronze,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                        Text(
+                            text = companion.classInfo,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = AppColors.inkMedium,
+                                lineHeight = 22.sp
+                            )
+                        )
+                    }
+                }
             }
         }
     }

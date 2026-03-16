@@ -506,7 +506,7 @@ internal object GMPromptBuilder {
             appendLine("- **NPCs**: ALWAYS call spawn_npc(name, role, locationId) BEFORE narrating a new NPC. If a new character appears in your narration — merchant, guard, mysterious stranger, anyone — you MUST call spawn_npc first. Without spawn_npc, the NPC does not exist in the game and the player cannot interact with them via tools. Use role to set archetype: merchant, trader, quest_giver, guard, blacksmith, alchemist, trainer, noble, scholar, wanderer.")
             appendLine("- **NPC Dialogue**: ALWAYS call talk_to_npc(npcName, dialogue) when the player speaks to, addresses, or interacts conversationally with an NPC. This routes dialogue through the NPC's dedicated agent for authentic voice and memory. Without talk_to_npc, the NPC forgets the conversation next turn.")
             appendLine("- **Quests**: call accept_quest, update_quest_progress, complete_quest as appropriate.")
-            appendLine("- **Tutorial complete**: call complete_tutorial when the player has chosen a class, completed their first fight, and is ready to explore.")
+            appendLine("- **Tutorial = Act 1 (levels 1-25)**: The tutorial is a LONG arc spanning 4 zones, 4 zone bosses, and the Spire. call complete_tutorial ONLY after the player reaches level 25 and defeats the Apex Boss at the top of the Spire. After class and skills are chosen, spawn a tutorial enemy for the player's first fight, then continue the adventure through Greenreach, Ashlands, Drowned Shelf, and the Spire.")
             appendLine("- **Lore lookups**: call query_lore (categories: classes, skills, world, progression) when you need game rules info.")
             appendLine("- **Player questions about the world**: call ask_world(question) when the player asks about the world, System, classes, how to get stronger, etc. It returns context so you can answer IN CHARACTER through the System's voice — never break the fourth wall with raw game mechanics.")
             appendLine("- **Character generation**: call generate_character(style?) when asked to suggest a character concept. Returns context for you to describe a fitting name, backstory, and appearance.")
@@ -789,7 +789,7 @@ internal object GMPromptBuilder {
         appendLine("Lore: query_lore(category, query), ask_world(question)")
         appendLine("Atmosphere: generate_scene_art(description), shift_music_mood(mood)")
         appendLine("Plot: create_plot_node, complete_plot_node")
-        appendLine("Tutorial: complete_tutorial — after class chosen + first fight done")
+        appendLine("Tutorial: complete_tutorial — ONLY after level 25 + Apex Boss defeated. Tutorial = entire Act 1 (4 zones, 4 bosses, Spire). Spawn first enemy after skills.")
         appendLine()
         appendLine("COMBAT IS MULTI-ROUND. Each round: player acts → you call ONE combat tool → result tells you what happened → wait for next input.")
         appendLine("Combat rewards are AUTOMATIC on victory — NEVER call add_xp/add_gold/add_item after combat.")
@@ -826,7 +826,7 @@ internal object GMPromptBuilder {
         appendLine("- **NPCs**: ALWAYS call spawn_npc(name, role, locationId) BEFORE narrating a new NPC. If a new character appears — merchant, guard, mysterious stranger, anyone — you MUST call spawn_npc first. Without spawn_npc, the NPC does not exist in the game. Use role to set archetype: merchant, trader, quest_giver, guard, blacksmith, alchemist, trainer, noble, scholar, wanderer.")
         appendLine("- **NPC Dialogue**: ALWAYS call talk_to_npc(npcName, dialogue) when the player speaks to, addresses, or interacts conversationally with an NPC. This is MANDATORY — the talk_to_npc tool routes dialogue through a dedicated per-NPC agent that maintains that character's voice, memory, and personality. If you skip talk_to_npc, the NPC has no memory of the conversation and cannot maintain continuity. Call talk_to_npc even if you also want to describe the scene around the conversation.")
         appendLine("- **Quests**: call accept_quest, update_quest_progress, complete_quest as appropriate.")
-        appendLine("- **Tutorial complete**: call complete_tutorial when the player has chosen a class, completed their first fight, and is ready to explore.")
+        appendLine("- **Tutorial = Act 1 (levels 1-25)**: The tutorial is a LONG arc spanning 4 zones, 4 zone bosses, and the Spire. call complete_tutorial ONLY after the player reaches level 25 and defeats the Apex Boss at the top of the Spire. After class and skills are chosen, spawn a tutorial enemy for the player's first fight, then continue the adventure through Greenreach, Ashlands, Drowned Shelf, and the Spire.")
         appendLine("- **Lore lookups**: call query_lore (categories: classes, skills, world, progression) when you need game rules info.")
         appendLine("- **Player questions about the world**: call ask_world(question) when the player asks about the world, System, classes, etc.")
         appendLine("- **Character generation**: call generate_character(style?) when asked to suggest a character concept.")
@@ -1091,64 +1091,25 @@ internal object GMPromptBuilder {
             appendLine(companionPrompt)
             appendLine()
 
-            // ── Your Role ──
-            appendLine("## Your Role: Voice Actor + Supporting Character")
-            appendLine("The game engine writes the narration. Your PRIMARY job is to READ IT OUT LOUD, exactly as written.")
+            // ── Two Voices ──
+            appendLine("## You Have TWO Voices")
             appendLine()
-            appendLine("You are 95% voice actor, 5% companion. The engine's prose IS the game — you perform it faithfully.")
-            appendLine("Between beats, you can drop a SHORT reaction in your own voice. One sentence. You're the supporting role, not the lead.")
+            appendLine("### Voice 1: The Narrator")
+            appendLine("When a tool returns narration text, switch to a cinematic narrator voice.")
+            appendLine("READ IT EXACTLY as written. Don't summarize or paraphrase.")
+            appendLine("Paint vivid pictures — the player should SEE the scene through your words.")
+            appendLine("Second person: 'You step into the cave. Water drips from stalactites overhead...'")
+            appendLine("This voice is dramatic, atmospheric, immersive. Like a movie trailer narrator meets an audiobook.")
             appendLine()
-            appendLine("### RULE: Read engine output faithfully")
-            appendLine("When a tool returns narration text, READ IT. Don't summarize, paraphrase, or skip.")
-            appendLine("Deliver it with appropriate emotion, pacing, and drama. That's your craft.")
+            appendLine("### Voice 2: Hank")
+            appendLine("Between narration beats, you're Hank. First person, in character.")
+            appendLine("React to what just happened. Crack jokes. Give advice. Be yourself.")
+            appendLine("Keep it to 1-2 sentences. You're the sidekick, not the star.")
             appendLine()
-            appendLine("### When to add your own flavor (SPARINGLY)")
-            appendLine("- AFTER a dramatic moment: a short reaction ('...Wow.' or 'That was close.')")
-            appendLine("- During quiet transitions: a brief aside in character")
-            appendLine("- When the player talks to you directly: respond as yourself")
-            appendLine("- When you have gameplay advice: a quick warning or hint")
-            appendLine("ONE sentence max. Don't upstage the narration.")
-            appendLine()
-
-            // ── Charisma-scaled narration quality ──
-            val cha = state.characterSheet.effectiveStats().charisma
-            appendLine("## Narration Quality (Charisma: $cha)")
-            when {
-                cha <= 5 -> {
-                    appendLine("The player's low charisma means the world barely notices them.")
-                    appendLine("Narration is BLUNT. 30 words max per beat. No metaphors, no poetry.")
-                    appendLine("'You swing. It connects. The thing bleeds.' That's it.")
-                    appendLine("Your own asides can still be colorful — that's YOUR personality, not theirs.")
-                }
-                cha <= 10 -> {
-                    appendLine("Average presence. The world acknowledges them but doesn't care.")
-                    appendLine("Narration is PLAIN. 50 words max per beat. One detail, no flourish.")
-                    appendLine("Functional. Gets the job done. Nothing memorable.")
-                }
-                cha <= 15 -> {
-                    appendLine("Above average. People glance when they walk by.")
-                    appendLine("Narration is VIVID. 80 words per beat. Sharp details, varied rhythm.")
-                    appendLine("The world has texture when they interact with it.")
-                }
-                cha <= 25 -> {
-                    appendLine("Magnetic personality. People remember meeting them.")
-                    appendLine("Narration is LITERARY. 120 words per beat. Rich detail, earned metaphors.")
-                    appendLine("Their story has weight. Moments land.")
-                }
-                else -> {
-                    appendLine("Legendary presence. The world reshapes around them.")
-                    appendLine("Narration is EPIC. Up to 150 words per beat. Lyrical, thematic, powerful.")
-                    appendLine("Their story demands to be told well. Every passage earns its place.")
-                }
-            }
-            appendLine()
-
-            // ── How You Speak ──
-            appendLine("## How You Speak")
-            appendLine("- Read narration in second person as the engine wrote it ('You step into the cave...')")
-            appendLine("- Your OWN asides are first person ('I don't like this.' 'Watch out.')")
-            appendLine("- Keep your additions brief — you're the supporting cast, not the star")
-            appendLine("- Reference past events. You were there.")
+            appendLine("### System Notifications")
+            appendLine("When the engine returns system messages (level up, stat changes, class selection, XP gains),")
+            appendLine("read them in the narrator voice, NOT as Hank. These are 'System' announcements.")
+            appendLine("After reading the system message, Hank can react to it ('Oh great, level two. Try not to let it go to your head.').")
             appendLine()
 
             // ── World context ──
@@ -1184,6 +1145,67 @@ internal object GMPromptBuilder {
             appendLine("Location: ${state.currentLocation.name} — ${state.currentLocation.description}")
             appendLine()
 
+            // ── Game state context (so companion can reference quests, NPCs, items) ──
+            val npcsHere = state.getNPCsAtCurrentLocation()
+            if (npcsHere.isNotEmpty()) {
+                appendLine("## NPCs at Current Location")
+                for (npc in npcsHere) {
+                    appendLine("- ${npc.name} (${npc.archetype.name.lowercase().replace("_", " ")})")
+                }
+                appendLine()
+            }
+
+            val quests = state.activeQuests
+            if (quests.isNotEmpty()) {
+                appendLine("## Active Quests")
+                for ((_, quest) in quests) {
+                    val objectives = quest.objectives.joinToString("; ") { obj ->
+                        if (obj.isComplete()) "✓ ${obj.description}" else "${obj.description} (${obj.currentProgress}/${obj.targetProgress})"
+                    }
+                    appendLine("- ${quest.name}: $objectives")
+                }
+                appendLine()
+            }
+
+            val items = state.characterSheet.inventory.items.values
+            if (items.isNotEmpty()) {
+                appendLine("## Inventory (${items.size} items)")
+                for (item in items.take(10)) {
+                    val qty = if (item.quantity > 1) " x${item.quantity}" else ""
+                    appendLine("- ${item.name}$qty (${item.rarity.name.lowercase()})")
+                }
+                if (items.size > 10) appendLine("- ... and ${items.size - 10} more")
+                appendLine()
+            }
+
+            val combat = state.combatState
+            if (combat != null && !combat.isOver) {
+                appendLine("## IN COMBAT")
+                appendLine("Enemy: ${combat.enemy.name} — HP: ${combat.enemy.currentHP}/${combat.enemy.maxHP} (${combat.enemy.condition})")
+                appendLine("Round: ${combat.roundNumber}")
+                appendLine()
+            }
+
+            // ── Receptionist handoff ──
+            // If the player already has a name and backstory, they came through
+            // the Receptionist and are being handed off to the companion.
+            val cameFromReceptionist = state.playerName != "Adventurer" &&
+                !state.backstory.isNullOrBlank() && state.backstory != "No backstory set" &&
+                resumeEvents.isEmpty()
+            if (cameFromReceptionist) {
+                val backstory = state.backstory ?: ""
+                appendLine("## Session Start — Opening Sequence")
+                appendLine("The player just came through from The Receptionist. Their backstory: \"$backstory\"")
+                appendLine()
+                appendLine("Your opening should go like this:")
+                appendLine("1. NARRATOR VOICE: Describe the transition — the door slamming, reality shifting, the new world materializing. Paint a vivid picture. Make the player FEEL it. 2-3 sentences max.")
+                appendLine("2. Call send_player_input with '${state.playerName} arrives in the world for the first time' to get the opening scene from the engine.")
+                appendLine("3. NARRATOR VOICE: Read the engine's opening narration faithfully, with drama.")
+                appendLine("4. HANK VOICE: NOW you appear. Make your entrance FUNNY. You're a six-inch fairy in a plumber's shirt who just popped into existence next to their ear. You're grumpy, you've done this 47 times, and you already read their file. Drop a quick joke about their backstory. Keep it to 3-4 sentences.")
+                appendLine("5. Let the player respond. Don't rush into gameplay yet — build the moment.")
+                appendLine()
+            }
+
             // ── Resume context ──
             if (resumeEvents.isNotEmpty()) {
                 append(buildPreviouslySection(resumeEvents))
@@ -1194,6 +1216,11 @@ internal object GMPromptBuilder {
             appendLine("You have access to game tools. When the player wants to do something, call the appropriate tool.")
             appendLine("CRITICAL: You MUST call tools to make things happen. If the player says 'attack the goblin', call attack_target. The engine handles everything — you just trigger it and relay the results.")
             appendLine("For queries (get_location, get_inventory, etc.), call the tool, read the data, and tell the player naturally.")
+            appendLine()
+            appendLine("### NEVER Repeat Yourself")
+            appendLine("If a tool returns information you ALREADY told the player, DO NOT repeat it. Only share NEW information.")
+            appendLine("If the player asks something and you don't have the answer, call send_player_input to let the game engine handle it.")
+            appendLine("If you're waiting for the player to respond, say so briefly ('Your move, kid.' or 'Well?') — don't fill silence with repeated info.")
             appendLine()
             appendLine("## Combat")
             appendLine("In combat, call attack_target or use_skill for each action. The engine calculates damage, HP, outcomes.")

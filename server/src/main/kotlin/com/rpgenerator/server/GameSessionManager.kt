@@ -25,6 +25,7 @@ object GameSessionManager {
     private val sessions = ConcurrentHashMap<String, GameSession>()
     private val geminiClient: Client by lazy { Client() }
     private val dataDir: String get() = SessionStore.getDataDir()
+    internal val GEMINI_LIVE_MODEL = System.getenv("GEMINI_LIVE_MODEL") ?: "gemini-2.5-flash-native-audio-preview-12-2025"
 
     /**
      * Create a brand new game session.
@@ -81,6 +82,7 @@ object GameSessionManager {
         }
 
         return try {
+            println("resumeSession($id): Opening DB at $dbPath")
             val driver = DriverFactory(dbPath).createDriver()
             val client = RPGClient(driver)
             val baseLlm = LLMFactory.create()
@@ -91,14 +93,18 @@ object GameSessionManager {
 
             // Each session DB has exactly one game — grab it
             val savedGames = client.getGames()
+            println("resumeSession($id): getGames() returned ${savedGames.size} game(s)")
             val gameInfo = savedGames.firstOrNull()
 
             if (gameInfo == null) {
                 println("Cannot resume session $id: no saved game found in DB")
+                client.close()
                 return null
             }
 
+            println("resumeSession($id): Resuming game ${gameInfo.id} (player=${gameInfo.playerName}, level=${gameInfo.level})")
             val game = client.resumeGame(gameInfo, trackingLlm)
+            println("resumeSession($id): Game resumed successfully")
 
             val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
             val session = GameSession(
@@ -109,11 +115,20 @@ object GameSessionManager {
                 scope = scope,
                 trackingLlm = trackingLlm
             )
+            // Seed the FeedStore with resume events so the client can
+            // pre-populate the feed via GET /events before connecting WebSocket.
+            val resumeEvents = game.getResumeEvents()
+            if (resumeEvents.isNotEmpty()) {
+                session.feedStore.seedFromEvents(resumeEvents)
+                println("resumeSession($id): Seeded feed with ${resumeEvents.size} persisted events")
+            }
+
             sessions[id] = session
             println("Resumed session $id from disk")
             session
         } catch (e: Exception) {
             println("Failed to resume session $id: ${e.message}")
+            e.printStackTrace()
             null
         }
     }
@@ -135,7 +150,8 @@ class GameSession(
     val geminiClient: Client,
     val scope: CoroutineScope,
     val trackingLlm: TrackingLLMInterface? = null,
-    val imageService: ImageGenerationService = ImageGenerationService(geminiClient)
+    val imageService: ImageGenerationService = ImageGenerationService(geminiClient),
+    val feedStore: FeedStore = FeedStore()
 ) {
     var geminiSession: GeminiAsyncSession? = null
         private set
@@ -152,9 +168,12 @@ class GameSession(
     /** Gate ALL realtime input while a Gemini tool call is pending (prevents 1008). */
     @Volatile var toolCallPending = false
 
-    /** Silence watchdog — nudge model if it goes quiet after user input */
-    @Volatile var awaitingModelResponse = false
-    var watchdogJob: kotlinx.coroutines.Job? = null
+    /** Last narrative text returned by send_player_input — used to distinguish narration readback from companion asides */
+    @Volatile var lastNarrativeText: String? = null
+
+    /** True once the companion has finished reading the engine narration and is now speaking as itself */
+    @Volatile var narrativeConsumed = false
+
 
     /**
      * Connect to Gemini Live API for voice narration.
@@ -246,13 +265,11 @@ class GameSession(
             .outputAudioTranscription(AudioTranscriptionConfig.builder().build())
             .build()
 
-        val modelId = "gemini-2.5-flash-native-audio-preview-12-2025"
-        geminiSession = geminiClient.async.live.connect(modelId, config).get()
+        geminiSession = geminiClient.async.live.connect(GameSessionManager.GEMINI_LIVE_MODEL, config).get()
         connected = true
     }
 
     fun disconnect() {
-        watchdogJob?.cancel()
         geminiSession?.close()
         geminiSession = null
         lyriaMusicService?.close()

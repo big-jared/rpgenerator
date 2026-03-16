@@ -19,6 +19,38 @@ internal class PlotGraphRepository(
         ignoreUnknownKeys = true
     }
 
+    // ========== StoryFoundation Persistence ==========
+
+    /**
+     * Save complete story foundation (system definition, narrator context, plot threads, foreshadowing).
+     * This is loaded on resume so the GM and narrator agents have full narrative context.
+     */
+    suspend fun saveStoryFoundation(gameId: String, foundation: com.rpgenerator.core.story.StoryFoundation) =
+        withContext(Dispatchers.Default) {
+            val foundationJson = json.encodeToString(foundation)
+            database.gameQueries.insertStoryFoundation(
+                gameId = gameId,
+                foundationJson = foundationJson
+            )
+        }
+
+    /**
+     * Load story foundation for a game.
+     */
+    suspend fun loadStoryFoundation(gameId: String): com.rpgenerator.core.story.StoryFoundation? =
+        withContext(Dispatchers.Default) {
+            database.gameQueries.selectStoryFoundation(gameId)
+                .executeAsOneOrNull()
+                ?.let { row ->
+                    try {
+                        json.decodeFromString<com.rpgenerator.core.story.StoryFoundation>(row.foundationJson)
+                    } catch (e: Exception) {
+                        println("Failed to deserialize StoryFoundation for game $gameId: ${e.message}")
+                        null
+                    }
+                }
+        }
+
     // ========== PlotGraph Persistence ==========
 
     /**
