@@ -77,6 +77,9 @@ kotlin {
             // Logging
             implementation(libs.kermit)
 
+            // Markdown rendering in feed
+            implementation(libs.markdown.renderer.m3)
+
             // Auth (cross-platform Google Sign-In + Firebase Auth persistence)
             implementation(libs.kmpauth.google)
             implementation(libs.kmpauth.uihelper)

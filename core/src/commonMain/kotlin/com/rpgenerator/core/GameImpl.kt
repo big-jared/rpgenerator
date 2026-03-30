@@ -318,7 +318,7 @@ internal class GameImpl(
 
     override fun getCompanionVoice(): String {
         return when (orchestrator.getState().seedId) {
-            "integration" -> "Orus"    // Firm, deliberate — fits Hank the grumpy Brooklyn fairy
+            "integration" -> "Algenib"  // Gravelly, deep — fits Hank the grumpy Brooklyn fairy
             "tabletop" -> "Puck"       // Bright, energetic — fits Pip the ink sprite
             "crawler" -> "Fenrir"      // Hushed, tense — fits Glitch the drone
             "quiet_life" -> "Kore"     // Warm, gentle — fits Bramble the forest spirit

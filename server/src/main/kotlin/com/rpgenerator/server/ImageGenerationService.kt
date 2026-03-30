@@ -114,7 +114,7 @@ class ImageGenerationService(
         if (req.characterClass != null) {
             append("a ${req.characterClass}, ")
         } else {
-            append("a fantasy adventurer, ")
+            append("a regular person, no armor or weapons, everyday clothes, ")
         }
 
         // Appearance

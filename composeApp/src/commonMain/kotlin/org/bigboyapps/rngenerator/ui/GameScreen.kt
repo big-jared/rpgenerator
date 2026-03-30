@@ -743,16 +743,27 @@ internal fun CombatOverlay(combat: CombatUi, modifier: Modifier = Modifier) {
 
 @Composable
 private fun NarrationBlock(item: FeedItem.Narration) {
-    Text(
-        text = item.text,
-        style = MaterialTheme.typography.bodyLarge.copy(
-            color = AppColors.inkDark,
-            lineHeight = 26.sp,
-            fontSize = 17.sp
-        ),
+    val bodyStyle = MaterialTheme.typography.bodyLarge.copy(
+        color = AppColors.inkDark,
+        lineHeight = 26.sp,
+        fontSize = 17.sp
+    )
+    val boldStyle = bodyStyle.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+    com.mikepenz.markdown.m3.Markdown(
+        content = item.text,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        colors = com.mikepenz.markdown.m3.markdownColor(
+            text = AppColors.inkDark
+        ),
+        typography = com.mikepenz.markdown.m3.markdownTypography(
+            h1 = boldStyle,
+            h2 = boldStyle,
+            h3 = boldStyle.copy(fontSize = 16.sp),
+            h4 = boldStyle.copy(fontSize = 15.sp),
+            paragraph = bodyStyle
+        )
     )
 }
 
@@ -999,15 +1010,39 @@ private fun LevelUpCard(item: FeedItem.LevelUp) {
 
 @Composable
 private fun SystemNoticeBlock(item: FeedItem.SystemNotice) {
-    Text(
-        text = item.text,
-        style = MaterialTheme.typography.bodySmall.copy(
-            color = AppColors.inkFaded,
-            fontStyle = FontStyle.Italic
-        ),
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 4.dp)
-    )
+    val isMultiLine = item.text.contains("\n")
+    if (isMultiLine) {
+        // Structured system output (character sheet, etc.) — use markdown, left-aligned
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .background(AppColors.parchmentDark.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                .padding(12.dp)
+        ) {
+            val monoStyle = MaterialTheme.typography.bodySmall.copy(
+                color = AppColors.inkFaded,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                lineHeight = 18.sp
+            )
+            com.mikepenz.markdown.m3.Markdown(
+                content = item.text,
+                colors = com.mikepenz.markdown.m3.markdownColor(text = AppColors.inkFaded),
+                typography = com.mikepenz.markdown.m3.markdownTypography(paragraph = monoStyle)
+            )
+        }
+    } else {
+        // Short system messages — centered italic
+        Text(
+            text = item.text,
+            style = MaterialTheme.typography.bodySmall.copy(
+                color = AppColors.inkFaded,
+                fontStyle = FontStyle.Italic
+            ),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 4.dp)
+        )
+    }
 }
 
 // ── Tool Result Card ─────────────────────────────────────────────

@@ -46,6 +46,9 @@ kermit = "2.0.4"
 # Build Config
 buildkonfig = "0.15.2"
 
+# Markdown
+markdown-renderer = "0.39.0"
+
 # Testing
 junit = "4.13.2"
 turbine = "1.2.1"
@@ -108,6 +111,9 @@ coil-network-ktor = { module = "io.coil-kt.coil3:coil-network-ktor3", version.re
 
 # Logging
 kermit = { module = "co.touchlab:kermit", version.ref = "kermit" }
+
+# Markdown
+markdown-renderer-m3 = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "markdown-renderer" }
 
 # Testing
 junit = { module = "junit:junit", version.ref = "junit" }

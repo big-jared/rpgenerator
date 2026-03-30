@@ -425,6 +425,7 @@ class GameViewModel(
     private val musicPlayer = MusicPlayer()
     private var pendingOnboardingResult: OnboardingResult? = null
     private var pendingLoadGameId: String? = null
+    private var pendingOpeningNarration: String = ""
 
     // Streaming narration: accumulate transcript chunks into one feed item per turn
     private var streamingNarrationId: String? = null
@@ -900,30 +901,65 @@ class GameViewModel(
         sessionId = id
         log.i { "Game created: $id (seed=${result.seedId})" }
 
-        // Generate portrait in background — never block game start
-        val portraitClient = apiClient
-        if (portraitClient != null) {
-            viewModelScope.launch {
-                try {
-                    val portraitResult = withTimeoutOrNull(10_000) {
-                        portraitClient.generatePortrait(
-                            sessionId = id,
-                            characterName = result.playerName,
-                            appearance = result.portraitDescription.ifBlank { "A brave adventurer" }
-                        )
-                    }
-                    if (portraitResult?.success == true && portraitResult.imageBase64 != null) {
-                        val bytes = kotlin.io.encoding.Base64.decode(portraitResult.imageBase64)
-                        _uiState.update { it.copy(playerAvatarBytes = bytes) }
-                        log.i { "Portrait generated: ${bytes.size} bytes" }
-                    } else {
-                        log.w { "Portrait generation timed out or failed" }
-                    }
-                } catch (e: Exception) {
-                    log.w(e) { "Portrait generation failed (non-fatal)" }
+        // Generate portrait + opening scene in parallel during loading
+        val portraitClient = apiClient!!
+        _uiState.update { it.copy(loadingStatus = "Generating your portrait...") }
+
+        // Launch portrait generation
+        val portraitJob = viewModelScope.launch {
+            try {
+                val portraitResult = withTimeoutOrNull(30_000) {
+                    portraitClient.generatePortrait(
+                        sessionId = id,
+                        characterName = result.playerName,
+                        appearance = result.portraitDescription.ifBlank { "A brave adventurer" }
+                    )
                 }
+                if (portraitResult?.success == true && portraitResult.imageBase64 != null) {
+                    val bytes = kotlin.io.encoding.Base64.decode(portraitResult.imageBase64)
+                    _uiState.update { it.copy(playerAvatarBytes = bytes) }
+                    log.i { "Portrait generated: ${bytes.size} bytes" }
+                } else {
+                    log.w { "Portrait generation timed out or failed" }
+                }
+            } catch (e: Exception) {
+                log.w(e) { "Portrait generation failed (non-fatal)" }
             }
         }
+
+        // Generate opening scene via REST API during loading
+        _uiState.update { it.copy(loadingStatus = "Generating your world...") }
+        log.i { "⏳ Generating opening scene..." }
+        var openingNarration = ""
+        try {
+            val sceneResult = portraitClient.executeTool(id, "send_player_input", mapOf(
+                "input" to "${result.playerName} arrives in the world for the first time"
+            ))
+            if (sceneResult.success) {
+                val narrationParts = sceneResult.events.mapNotNull { event ->
+                    val type = event["type"]?.jsonPrimitive?.content
+                    when (type) {
+                        "NarratorText" -> event["text"]?.jsonPrimitive?.content
+                        "SystemNotification" -> "[System] " + (event["text"]?.jsonPrimitive?.content ?: "")
+                        else -> null
+                    }
+                }
+                openingNarration = narrationParts.joinToString("\n\n")
+                log.i { "⏳ Opening scene: ${openingNarration.length} chars, ${narrationParts.size} parts" }
+                for (text in narrationParts) {
+                    addFeedItem(FeedItem.Narration(text))
+                }
+            }
+        } catch (e: Exception) {
+            log.w(e) { "Opening scene generation failed (non-fatal)" }
+        }
+        pendingOpeningNarration = openingNarration
+
+        // Wait for portrait (best effort, 10s max from here)
+        log.i { "⏳ Waiting for portrait (up to 10s)..." }
+        _uiState.update { it.copy(loadingStatus = "Almost ready...") }
+        withTimeoutOrNull(10_000) { portraitJob.join() }
+        log.i { "⏳ Portrait wait done. hasPortrait=${_uiState.value.playerAvatarBytes != null}" }
 
         // Create fresh connection for the game session
         _uiState.update { it.copy(loadingStatus = "Connecting to your world...") }
@@ -951,18 +987,20 @@ class GameViewModel(
             conn.messages.collect { msg -> handleServerMessage(msg) }
         }
 
+        // Pass opening narration to the bridge so it's included in the connect message
+        org.bigboyapps.rngenerator.audio.NativeGeminiProvider.bridge?.setOpeningNarration(pendingOpeningNarration)
         conn.startSession(serverUrl, id)
 
-        // Wait for first model response AND portrait before showing game screen
-        _uiState.update { it.copy(loadingStatus = "Entering your world...") }
-        withTimeoutOrNull(15_000L) {
+        // Wait for feed items (opening scene) and portrait before showing game
+        _uiState.update { it.copy(loadingStatus = "Entering your world...", subtitleText = "", feedItems = emptyList()) }
+        withTimeoutOrNull(20_000L) {
             var elapsed = 0L
             while (true) {
-                val state = _uiState.value
-                val hasFirstMessage = state.feedItems.isNotEmpty() || state.subtitleText.isNotBlank()
-                val hasPortrait = state.playerAvatarBytes != null
-                if (hasFirstMessage && hasPortrait) break
-                if (hasFirstMessage && elapsed > 10_000L) break // Don't wait more than 10s for portrait
+                val s = _uiState.value
+                val hasFeed = s.feedItems.isNotEmpty()
+                val hasPortrait = s.playerAvatarBytes != null
+                if (hasFeed && hasPortrait) break
+                if (hasFeed && elapsed > 12_000L) break // Don't wait forever for portrait
                 kotlinx.coroutines.delay(200)
                 elapsed += 200
             }
@@ -970,6 +1008,7 @@ class GameViewModel(
 
         // Transition to game — clear all receptionist-phase UI state
         pendingOnboardingResult = null
+        pendingOpeningNarration = ""
         streamingNarrationBuffer.clear()
         streamingNarrationId = null
         _uiState.update {
@@ -1076,7 +1115,7 @@ class GameViewModel(
         appendLine()
         appendLine("3. BACKSTORY: Ask what their deal is — what were they doing before they ended up here? If they give a vague one-word answer like 'mechanic' or 'student', push for more — 'Riveting. Tell me more, what's a normal day to day?' Get at least a couple details before you call set_backstory.")
         appendLine()
-        appendLine("4. APPEARANCE: Ask what they look like. Be blunt: 'I need to fill out your file. Age? What do you look like — hair, build, anything distinguishing? Don't be modest.' Get enough to picture them, then call set_appearance with a short visual description (e.g. 'mid-30s woman, short red hair, athletic build, scar across left cheek').")
+        appendLine("4. APPEARANCE: Ask what they look like — age, build, hair, anything distinguishing. This goes on their file for their portrait.")
         appendLine()
         appendLine("5. THE FOUR DOORS: Now pitch the worlds. Keep each to one sentence:")
         appendLine("   - System Integration (world_id: integration) — leveling up, space travel, progression")
@@ -1223,15 +1262,11 @@ class GameViewModel(
                         // Receptionist: don't send a name — she asks for it
                         "[A new arrival walks through the door and sits down across from you.]"
                     } else {
-                        // Use the actual character name (from onboarding or game state), not sign-in name
-                        val playerName = pendingOnboardingResult?.playerName
-                            ?: _uiState.value.playerStats?.name ?: ""
-                        if (playerName.isNotBlank() && playerName != "Adventurer" && playerName != "Dev Player") {
-                            "The Receptionist just sent me through. I'm $playerName."
-                        } else {
-                            "Hello! I'm here."
-                        }
+                        // Game session: narration is in the system prompt.
+                        // Send a short trigger to make the model start speaking.
+                        "[Begin.]"
                     }
+                    log.i { "📨 Sending greeting (${greeting.length} chars): ${greeting.take(100)}..." }
                     connection?.sendText(greeting)
                 }
             }
@@ -1247,22 +1282,17 @@ class GameViewModel(
             }
 
             is ServerMessage.Text -> {
-                // Text parts from modelTurn — clean, well-formatted text from Gemini.
-                // Use this for the narration feed (much higher quality than ASR transcript).
+                // Text from the voice model — used for subtitles only.
+                // The feed is populated from ServerMessage.Feed (engine events),
+                // NOT from the voice model's spoken text.
                 log.d { "📨 Text: ${msg.content}" }
                 if (msg.content.isNotBlank()) {
-                    // Filter out vocalized tool calls
-                    val toolCallPattern = Regex("""(set_backstory|set_player_name|select_world|finish_onboarding)\s*\(""")
-                    if (toolCallPattern.containsMatchIn(msg.content)) {
-                        log.w { "📨 Filtered vocalized tool call from text: ${msg.content}" }
-                        return
-                    }
                     finalizeStreamingPlayerMessage()
                     if (_uiState.value.screen == Screen.ONBOARDING) {
                         appendOnboardingModelChunk(msg.content)
                     }
-                    // Accumulate clean text into streaming narration feed item
-                    appendToStreamingNarration(msg.content)
+                    // Subtitle display only — feed comes from engine events
+                    _uiState.update { it.copy(subtitleText = msg.content, isGeminiSpeaking = true) }
                 }
             }
 
@@ -1283,7 +1313,7 @@ class GameViewModel(
                     // During onboarding, live-update the streaming user message
                     if (_uiState.value.screen == Screen.ONBOARDING) {
                         val fullText = streamingPlayerMessageBuffer.toString().trim()
-                        _uiShatate.update { state ->
+                        _uiState.update { state ->
                             val msgs = state.onboardingMessages
                             // Replace the last user message if it's still streaming, otherwise append
                             val updated = if (msgs.isNotEmpty() && msgs.last().role == "user") {

@@ -339,11 +339,15 @@ class SwiftGeminiBridge: NativeGeminiBridge {
         self.webSocketTask = task
         task.resume()
 
-        // Send connect message
-        let connectMsg: [String: Any] = [
+        // Send connect message (include opening narration if available)
+        var connectMsg: [String: Any] = [
             "type": "connect",
             "voiceName": voiceName
         ]
+        if let narration = pendingOpeningNarration, !narration.isEmpty {
+            connectMsg["openingNarration"] = narration
+            pendingOpeningNarration = nil
+        }
         sendJsonMessage(connectMsg)
 
         // Start receive loop
@@ -352,6 +356,8 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
     /// Session ID for game mode — set by Kotlin side before calling startGameSession
     private var currentSessionId: String? = nil
+    /// Opening narration to pass to the server in the connect message
+    private var pendingOpeningNarration: String? = nil
     /// Auth token — appended as ?token= query param on WebSocket URLs
     private var authToken: String? = nil
 
@@ -361,6 +367,10 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
     func setAuthToken(token: String) {
         self.authToken = token.isEmpty ? nil : token
+    }
+
+    func setOpeningNarration(narration: String) {
+        self.pendingOpeningNarration = narration.isEmpty ? nil : narration
     }
 
     // MARK: - WebSocket Receive Loop
@@ -675,7 +685,15 @@ class SwiftGeminiBridge: NativeGeminiBridge {
     // MARK: - Audio Recording
 
     func startRecording() {
-        guard !isRecording, let engine = audioEngine, let converter = audioConverter else { return }
+        if isRecording { return }
+        guard let engine = audioEngine, let converter = audioConverter else {
+            // Engine or converter not ready yet (config change in progress) — retry after a short delay
+            print("SwiftGeminiBridge: startRecording deferred — engine=\(audioEngine != nil), converter=\(audioConverter != nil)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.startRecording()
+            }
+            return
+        }
 
         let inputNode = engine.inputNode
 
@@ -768,6 +786,9 @@ class SwiftGeminiBridge: NativeGeminiBridge {
 
     func close() {
         disconnect()
+        // Flush audioQueue synchronously — pending dispatches may reference nodes
+        // that are about to be detached, causing '_engine != nil' crashes.
+        audioQueue.sync {}
         // Stop engine first — nodes must be stopped while engine owns them,
         // otherwise calling stop() on a detached node crashes with '_engine != nil'.
         if let engine = audioEngine {

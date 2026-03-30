@@ -130,9 +130,29 @@ internal class GameOrchestrator(
                 } catch (_: Exception) { /* proceed without */ }
             }
 
-            val openingNarration = narratorAgent.narrateOpening(gameState, storyFoundation?.narratorContext)
+            // Multimodal opening: narrator generates text + scene image
+            val openingChunks = narratorAgent.narrateOpeningMultimodal(gameState, storyFoundation?.narratorContext)
+            val openingNarration = openingChunks.filterIsInstance<com.rpgenerator.core.api.AgentChunk.Text>()
+                .joinToString("") { it.content }
+            val openingImages = openingChunks.filterIsInstance<com.rpgenerator.core.api.AgentChunk.Image>()
+
             emit(GameEvent.NarratorText(openingNarration))
             eventLog.add(GameEvent.NarratorText(openingNarration))
+
+            // Emit generated scene images
+            for (img in openingImages) {
+                val sceneEvent = GameEvent.SceneImage(imageData = img.data, description = "Opening scene")
+                emit(sceneEvent)
+                eventLog.add(sceneEvent)
+            }
+            // Fallback: if no images generated, emit placeholder for server-side generation
+            if (openingImages.isEmpty()) {
+                val sceneDesc = buildOpeningSceneDescription(gameState)
+                val sceneEvent = GameEvent.SceneImage(imageData = ByteArray(0), description = sceneDesc)
+                emit(sceneEvent)
+                eventLog.add(sceneEvent)
+            }
+
             gameState = gameState.copy(hasOpeningNarrationPlayed = true)
 
             // Mark story beats up to current level as already delivered,
@@ -163,11 +183,6 @@ internal class GameOrchestrator(
             val musicEvent = GameEvent.MusicChange(mood = openingMood, audioData = null)
             emit(musicEvent)
             eventLog.add(musicEvent)
-
-            val sceneDesc = buildOpeningSceneDescription(gameState)
-            val sceneEvent = GameEvent.SceneImage(imageData = ByteArray(0), description = sceneDesc)
-            emit(sceneEvent)
-            eventLog.add(sceneEvent)
 
             // Always return after opening — the player's input will be processed on the next call.
             // Without this, the 3-phase turn pipeline runs AGAIN and the narrator re-describes the intro.
@@ -401,58 +416,46 @@ internal class GameOrchestrator(
             }
         }
 
-        // Check if GM requested scene art generation this turn
-        val sceneArtRequested = pendingEvents.any { it is GameEvent.SceneImage }
-        val sceneArtDescription = pendingEvents.filterIsInstance<GameEvent.SceneImage>()
+        // Always use multimodal narration — narrator generates text + scene image every turn
+        val sceneHint = pendingEvents.filterIsInstance<GameEvent.SceneImage>()
             .firstOrNull()?.description
 
-        if (sceneArtRequested && sceneArtDescription != null) {
-            // Multimodal narration: generate text + inline image
-            val imagePrompt = narrationInput + "\n\n" +
-                "IMPORTANT: Also generate a scene image that matches your narration. " +
-                "The image should be a digital painting, fantasy concept art style, " +
-                "rich colors, dramatic cinematic lighting, painterly brushwork. " +
-                "Scene: $sceneArtDescription"
+        val imagePrompt = narrationInput + "\n\n" +
+            "IMPORTANT: Also generate a scene image that matches your narration. " +
+            "Digital painting, fantasy concept art style, rich colors, dramatic cinematic lighting, painterly brushwork. " +
+            if (sceneHint != null) "Scene focus: $sceneHint" else "Capture the most dramatic moment of this scene."
 
-            val multimodalChunks = narrateAgent.sendMessageMultimodal(imagePrompt, generateImage = true).toList()
-            narrativeText = multimodalChunks.filterIsInstance<AgentChunk.Text>().joinToString("") { it.content }
-            val generatedImages = multimodalChunks.filterIsInstance<AgentChunk.Image>()
+        val multimodalChunks = narrateAgent.sendMessageMultimodal(imagePrompt, generateImage = true).toList()
+        narrativeText = multimodalChunks.filterIsInstance<AgentChunk.Text>().joinToString("") { it.content }
+        val generatedImages = multimodalChunks.filterIsInstance<AgentChunk.Image>()
 
-            if (narrativeText.isNotBlank()) {
-                val narrativeEvent = GameEvent.NarratorText(narrativeText)
-                emit(narrativeEvent)
-                eventLog.add(narrativeEvent)
-            }
+        if (narrativeText.isNotBlank()) {
+            val narrativeEvent = GameEvent.NarratorText(narrativeText)
+            emit(narrativeEvent)
+            eventLog.add(narrativeEvent)
+        }
 
-            // Emit real image data from Gemini's multimodal output
-            for (img in generatedImages) {
-                val imageEvent = GameEvent.SceneImage(imageData = img.data, description = sceneArtDescription)
-                emit(imageEvent)
-                eventLog.add(imageEvent)
-            }
+        // Emit generated scene images
+        for (img in generatedImages) {
+            val desc = sceneHint ?: "Scene from narration"
+            val imageEvent = GameEvent.SceneImage(imageData = img.data, description = desc)
+            emit(imageEvent)
+            eventLog.add(imageEvent)
+        }
 
-            // Emit non-image pending events only (scene images replaced by real ones above)
-            for (event in pendingEvents) {
-                if (event is GameEvent.SceneImage) continue // replaced by real image
-                emit(event)
-                eventLog.add(event)
-            }
-        } else {
-            // Text-only narration (fast path — most turns)
-            val narrativeChunks = narrateAgent.sendMessage(narrationInput).toList()
-            narrativeText = narrativeChunks.joinToString("")
+        // Emit non-image pending events
+        for (event in pendingEvents) {
+            if (event is GameEvent.SceneImage) continue // replaced by real image above
+            emit(event)
+            eventLog.add(event)
+        }
 
-            if (narrativeText.isNotBlank()) {
-                val narrativeEvent = GameEvent.NarratorText(narrativeText)
-                emit(narrativeEvent)
-                eventLog.add(narrativeEvent)
-            }
-
-            // Emit accumulated tool events
-            for (event in pendingEvents) {
-                emit(event)
-                eventLog.add(event)
-            }
+        // Fallback: if GM requested scene art but narrator didn't generate one,
+        // emit the placeholder for server-side generation
+        if (sceneHint != null && generatedImages.isEmpty()) {
+            val fallbackEvent = GameEvent.SceneImage(imageData = ByteArray(0), description = sceneHint)
+            emit(fallbackEvent)
+            eventLog.add(fallbackEvent)
         }
 
         } // end else (skipNarration)

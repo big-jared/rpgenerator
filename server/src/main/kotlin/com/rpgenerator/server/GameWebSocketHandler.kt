@@ -92,12 +92,18 @@ object GameWebSocketHandler {
             val companionVoice = session.game.getCompanionVoice()
             val voiceName = if (companionVoice.isNotBlank()) companionVoice
                 else msg["voiceName"]?.jsonPrimitive?.content ?: "Kore"
-            val prompt = session.game.getSystemPrompt()
-            println("GameWSHandler: Connecting with voice=$voiceName, prompt (${prompt.length} chars):")
-            println("=== FULL SYSTEM PROMPT ===")
-            println(prompt)
-            println("=== END SYSTEM PROMPT ===")
-            session.connectToGemini(voiceName = voiceName)
+            var prompt = session.game.getSystemPrompt()
+
+            // Opening narration is passed via the connect message from the client
+            // (generated during loading screen via REST API)
+            val openingNarration = msg["openingNarration"]?.jsonPrimitive?.content
+            if (!openingNarration.isNullOrBlank()) {
+                prompt += "\n\n## OPENING NARRATION (read this aloud NOW)\n$openingNarration"
+                println("GameWSHandler: Appended opening narration (${openingNarration.length} chars) from client")
+            }
+
+            println("GameWSHandler: Connecting with voice=$voiceName, prompt (${prompt.length} chars)")
+            session.connectToGemini(voiceName = voiceName, systemPrompt = prompt)
 
             // Serialize all Gemini callbacks through a channel to preserve message ordering.
             // NOTE: gemini.receive() is ASYNC — it registers a callback and returns immediately.
@@ -143,7 +149,16 @@ object GameWebSocketHandler {
                 }
             }
 
+            // Push existing feed entries so the client has full context on connect/reconnect
+            val existingFeed = session.feedStore.all()
+            if (existingFeed.isNotEmpty()) {
+                println("GameWSHandler: Pushing ${existingFeed.size} existing feed entries on connect")
+                ws.sendFeedSync(existingFeed)
+            }
+
             ws.send("""{"type": "connected"}""")
+
+            // Opening feed events were already sent to client during loading via REST
         } catch (e: Exception) {
             ws.send("""{"type": "error", "message": "${e.message?.replace("\"", "\\\"")}"}""")
         }
@@ -519,25 +534,38 @@ object GameWebSocketHandler {
                 ws.sendFeedEntry(entry)
             }
             is GameEvent.SceneImage -> {
-                if (event.description.isNotBlank()) {
+                // Store image in session cache and send URL (not inline base64 — too large for WebSocket)
+                suspend fun storeAndSendImageUrl(imageData: ByteArray, mimeType: String, description: String) {
+                    val imageId = java.util.UUID.randomUUID().toString().take(8)
+                    session.images[imageId] = Pair(imageData, mimeType)
+                    val imageUrl = "/api/game/${session.id}/image/$imageId"
+                    println("GameWSHandler: Scene image stored as $imageId (${imageData.size} bytes), url=$imageUrl")
+                    val entry = feed.append("scene_image", null, buildJsonObject {
+                        put("imageUrl", JsonPrimitive(imageUrl))
+                        put("mimeType", JsonPrimitive(mimeType))
+                        put("description", JsonPrimitive(description.take(200)))
+                    })
+                    ws.sendFeedEntry(entry)
+                    ws.send("""{"type": "scene_image", "imageUrl": "$imageUrl", "mimeType": "$mimeType"}""")
+                }
+
+                if (event.imageData.isNotEmpty()) {
+                    println("GameWSHandler: SceneImage with inline data (${event.imageData.size} bytes)")
+                    storeAndSendImageUrl(event.imageData, "image/png", event.description)
+                } else if (event.description.isNotBlank()) {
+                    println("GameWSHandler: SceneImage — generating server-side (${event.description.take(80)}...)")
                     try {
                         val state = session.game.getState()
                         val imgResult = session.imageService.generateSceneArt(
                             SceneArtRequest(
                                 locationName = state.location,
-                                description = event.description
+                                description = event.description.take(500)
                             )
                         )
                         if (imgResult is ImageResult.Success) {
-                            val b64 = Base64.getEncoder().encodeToString(imgResult.imageData)
-                            val entry = feed.append("scene_image", null, buildJsonObject {
-                                put("data", JsonPrimitive(b64))
-                                put("mimeType", JsonPrimitive(imgResult.mimeType))
-                                put("description", JsonPrimitive(event.description))
-                            })
-                            ws.sendFeedEntry(entry)
-                            // Also send legacy scene_image for backward compat
-                            ws.send("""{"type": "scene_image", "data": "$b64", "mimeType": "${imgResult.mimeType}"}""")
+                            storeAndSendImageUrl(imgResult.imageData, imgResult.mimeType, event.description)
+                        } else if (imgResult is ImageResult.Failure) {
+                            println("GameWSHandler: Scene art generation failed: ${imgResult.error}")
                         }
                     } catch (e: Exception) {
                         println("GameWSHandler: Scene art generation failed: ${e.message}")

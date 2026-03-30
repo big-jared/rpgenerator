@@ -165,6 +165,9 @@ class GameSession(
     /** Cached item icon images: itemId → (imageBytes, mimeType) */
     val itemIcons = ConcurrentHashMap<String, Pair<ByteArray, String>>()
 
+    /** Cached scene/portrait images: imageId → (imageBytes, mimeType) */
+    val images = ConcurrentHashMap<String, Pair<ByteArray, String>>()
+
     /** Gate ALL realtime input while a Gemini tool call is pending (prevents 1008). */
     @Volatile var toolCallPending = false
 

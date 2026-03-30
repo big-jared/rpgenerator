@@ -179,7 +179,7 @@ class GameApiClient(
             put("characterName", characterName)
             put("appearance", appearance)
             if (characterClass != null) put("characterClass", characterClass)
-            put("mood", "heroic")
+            put("mood", "determined but ordinary")
             put("framing", "BUST")
         })
     }

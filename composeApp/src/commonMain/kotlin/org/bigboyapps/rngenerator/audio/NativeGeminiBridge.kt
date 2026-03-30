@@ -28,6 +28,7 @@ interface NativeGeminiBridge {
     fun configure(serverUrl: String)
     fun setSessionId(sessionId: String)
     fun setAuthToken(token: String)
+    fun setOpeningNarration(narration: String)
     fun startReceptionistSession(prompt: String, toolsJson: String, voiceName: String, callback: GeminiMessageCallback)
     fun startGameSession(systemPrompt: String, toolsJson: String, voiceName: String, callback: GeminiMessageCallback)
     fun sendToolResponse(id: String, name: String, responseJson: String)

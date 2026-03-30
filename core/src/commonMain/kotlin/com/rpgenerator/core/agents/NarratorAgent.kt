@@ -1,5 +1,6 @@
 package com.rpgenerator.core.agents
 
+import com.rpgenerator.core.api.AgentChunk
 import com.rpgenerator.core.api.LLMInterface
 import com.rpgenerator.core.api.SystemType
 import com.rpgenerator.core.domain.GameState
@@ -29,6 +30,12 @@ internal class NarratorAgent(private val llm: LLMInterface, customPrompt: String
         - Weave the player's past through reflexes and half-thoughts, not exposition.
         - Muscle memory, old habits, flinches — the body remembers before the mind does.
 
+        FORMATTING:
+        - Use paragraph breaks (blank lines) between distinct beats or scene shifts.
+        - Each beat of action, dialogue, or description gets its own paragraph.
+        - System messages like [CLASS SELECTION PENDING] get their own line.
+        - This text will be rendered with markdown — use **bold** for System messages and emphasis.
+
         PACING:
         - Not every moment needs to escalate. Quiet beats make action beats hit harder.
         - If the player is exploring or asking questions, match their energy. Be descriptive, not urgent.
@@ -47,6 +54,29 @@ internal class NarratorAgent(private val llm: LLMInterface, customPrompt: String
         - INVENT NPCs. You may ONLY reference NPCs listed in "NPCs present" in the world state. If no NPCs are listed, the area is empty — do NOT describe unnamed strangers, shopkeepers, guards, or anyone the player could try to interact with. Crowd scenes are fine ("people mill about") but never give an unnamed character dialogue, a name, or distinguishing features that invite interaction.
         """.trimIndent()
     )
+
+    /**
+     * Narrate the opening scene with multimodal output (text + scene image).
+     * Returns text and any generated images as AgentChunks.
+     */
+    suspend fun narrateOpeningMultimodal(state: GameState, narratorContext: NarratorContext? = null): List<AgentChunk> {
+        val text = narrateOpening(state, narratorContext)
+        // Re-send the narration with image generation request
+        val imagePrompt = buildString {
+            appendLine("Generate a scene image for this opening narration:")
+            appendLine(text.take(500))
+            appendLine()
+            appendLine("Style: Digital painting, fantasy concept art, rich colors, dramatic cinematic lighting, wide establishing shot.")
+            appendLine("Location: ${state.currentLocation.name} — ${state.currentLocation.description.take(200)}")
+        }
+        val imageChunks = agentStream.sendMessageMultimodal(imagePrompt, generateImage = true).toList()
+        val images = imageChunks.filterIsInstance<AgentChunk.Image>()
+
+        return buildList {
+            add(AgentChunk.Text(text))
+            addAll(images)
+        }
+    }
 
     suspend fun narrateOpening(state: GameState, narratorContext: NarratorContext? = null): String {
         val genreGuidance = getGenreGuidance(state.systemType)

@@ -164,8 +164,13 @@ class GameWebSocketClient(
     /**
      * Send a "connect" message to start the Gemini Live session.
      */
-    suspend fun sendConnect(voiceName: String = "Kore") {
-        session?.send("""{"type": "connect", "voiceName": "$voiceName"}""")
+    suspend fun sendConnect(voiceName: String = "Kore", openingNarration: String? = null) {
+        val escaped = openingNarration?.replace("\\", "\\\\")?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: ""
+        if (escaped.isNotBlank()) {
+            session?.send("""{"type": "connect", "voiceName": "$voiceName", "openingNarration": "$escaped"}""")
+        } else {
+            session?.send("""{"type": "connect", "voiceName": "$voiceName"}""")
+        }
     }
 
     /**

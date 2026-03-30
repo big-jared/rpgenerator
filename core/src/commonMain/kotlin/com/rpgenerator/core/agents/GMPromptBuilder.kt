@@ -1080,7 +1080,7 @@ internal object GMPromptBuilder {
     fun buildCompanionPrompt(state: GameState, resumeEvents: List<GameEvent> = emptyList()): String {
         val seed = state.seedId?.let { WorldSeeds.byId(it) }
         return buildString {
-            // ── Companion identity + personality ──
+            // ── Companion identity (keep short) ──
             val companionPrompt = when (seed?.id) {
                 "integration" -> HankCompanion.prompt()
                 "tabletop" -> PipCompanion.prompt()
@@ -1092,189 +1092,61 @@ internal object GMPromptBuilder {
             appendLine()
 
             // ── Two Voices ──
-            appendLine("## You Have TWO Voices")
-            appendLine()
-            appendLine("### Voice 1: The Narrator")
-            appendLine("When a tool returns narration text, switch to a cinematic narrator voice.")
-            appendLine("READ IT EXACTLY as written. Don't summarize or paraphrase.")
-            appendLine("Paint vivid pictures — the player should SEE the scene through your words.")
-            appendLine("Second person: 'You step into the cave. Water drips from stalactites overhead...'")
-            appendLine("This voice is dramatic, atmospheric, immersive. Like a movie trailer narrator meets an audiobook.")
-            appendLine()
-            appendLine("### Voice 2: Hank")
-            appendLine("Between narration beats, you're Hank. First person, in character.")
-            appendLine("React to what just happened. Crack jokes. Give advice. Be yourself.")
-            appendLine("Keep it to 1-2 sentences. You're the sidekick, not the star.")
-            appendLine()
-            appendLine("### System Notifications")
-            appendLine("When the engine returns system messages (level up, stat changes, class selection, XP gains),")
-            appendLine("read them in the narrator voice, NOT as Hank. These are 'System' announcements.")
-            appendLine("After reading the system message, Hank can react to it ('Oh great, level two. Try not to let it go to your head.').")
+            appendLine("## TWO VOICES")
+            appendLine("NARRATOR: When tools return narration/system text, read it in a cinematic narrator voice. Second person, vivid, atmospheric. Paint pictures the player can SEE.")
+            appendLine("COMPANION: Between narration, you're yourself. First person, in character. React, joke, advise. 1-2 sentences max.")
+            appendLine("SYSTEM: Level ups, stat changes, class options — read in narrator voice, then react as yourself.")
             appendLine()
 
-            // ── World context ──
-            if (seed != null) {
-                appendLine("## World: ${seed.displayName}")
-                appendLine(seed.narratorPrompt)
-                appendLine()
-                appendLine("## Power System: ${seed.powerSystem.name}")
-                appendLine("Source: ${seed.powerSystem.source}")
-                appendLine("Progression: ${seed.powerSystem.progression}")
-                appendLine("Unique Mechanic: ${seed.powerSystem.uniqueMechanic}")
-                appendLine()
-            }
-
-            // ── Core plot ──
-            if (seed != null) {
-                appendLine("## Narrative Goals")
-                appendLine("Central Question: ${seed.corePlot.centralQuestion}")
-                appendLine("Act One Goal: ${seed.corePlot.actOneGoal}")
-                appendLine()
-            }
-
-            // ── Player context ──
-            appendLine("## Player: ${state.playerName}")
-            appendLine("Level: ${state.playerLevel}")
+            // ── Player context (minimal) ──
+            appendLine("## Player: ${state.playerName} (Level ${state.playerLevel})")
             if (state.characterSheet.playerClass != PlayerClass.NONE) {
-                appendLine("Class: ${state.characterSheet.playerClass.displayName}")
-            }
-            if (state.characterSheet.profession != Profession.NONE) {
-                appendLine("Profession: ${state.characterSheet.profession.displayName}")
+                append("Class: ${state.characterSheet.playerClass.displayName}. ")
             }
             state.backstory?.let { appendLine("Backstory: $it") }
-            appendLine("Location: ${state.currentLocation.name} — ${state.currentLocation.description}")
+            appendLine("Location: ${state.currentLocation.name}")
             appendLine()
 
-            // ── Game state context (so companion can reference quests, NPCs, items) ──
-            val npcsHere = state.getNPCsAtCurrentLocation()
-            if (npcsHere.isNotEmpty()) {
-                appendLine("## NPCs at Current Location")
-                for (npc in npcsHere) {
-                    appendLine("- ${npc.name} (${npc.archetype.name.lowercase().replace("_", " ")})")
-                }
-                appendLine()
-            }
-
-            val quests = state.activeQuests
-            if (quests.isNotEmpty()) {
-                appendLine("## Active Quests")
-                for ((_, quest) in quests) {
-                    val objectives = quest.objectives.joinToString("; ") { obj ->
-                        if (obj.isComplete()) "✓ ${obj.description}" else "${obj.description} (${obj.currentProgress}/${obj.targetProgress})"
-                    }
-                    appendLine("- ${quest.name}: $objectives")
-                }
-                appendLine()
-            }
-
-            val items = state.characterSheet.inventory.items.values
-            if (items.isNotEmpty()) {
-                appendLine("## Inventory (${items.size} items)")
-                for (item in items.take(10)) {
-                    val qty = if (item.quantity > 1) " x${item.quantity}" else ""
-                    appendLine("- ${item.name}$qty (${item.rarity.name.lowercase()})")
-                }
-                if (items.size > 10) appendLine("- ... and ${items.size - 10} more")
-                appendLine()
-            }
-
-            val combat = state.combatState
-            if (combat != null && !combat.isOver) {
-                appendLine("## IN COMBAT")
-                appendLine("Enemy: ${combat.enemy.name} — HP: ${combat.enemy.currentHP}/${combat.enemy.maxHP} (${combat.enemy.condition})")
-                appendLine("Round: ${combat.roundNumber}")
-                appendLine()
-            }
-
-            // ── Receptionist handoff ──
-            // If the player already has a name and backstory, they came through
-            // the Receptionist and are being handed off to the companion.
+            // ── Session start or resume ──
             val cameFromReceptionist = state.playerName != "Adventurer" &&
                 !state.backstory.isNullOrBlank() && state.backstory != "No backstory set" &&
                 resumeEvents.isEmpty()
             if (cameFromReceptionist) {
-                val backstory = state.backstory ?: ""
-                appendLine("## Session Start — Opening Sequence")
-                appendLine("The player just came through from The Receptionist. Their backstory: \"$backstory\"")
+                appendLine("## OPENING SEQUENCE")
+                appendLine("The opening narration is provided in the first message. DO NOT call send_player_input for the opening — it's already done.")
+                appendLine("1. NARRATOR VOICE: Read the provided narration with cinematic drama. Paint the scene vividly. Make the player FEEL the world materializing around them.")
+                appendLine("2. YOUR VOICE: Make your entrance FUNNY. Pop into existence next to their ear. Grumpy, done this 47 times, read their file. Joke about their backstory: \"${state.backstory ?: ""}\". 3-4 sentences.")
+                appendLine("3. Wait for the player to respond. Let them react to the world and to you.")
                 appendLine()
-                appendLine("Your opening should go like this:")
-                appendLine("1. NARRATOR VOICE: Describe the transition — the door slamming, reality shifting, the new world materializing. Paint a vivid picture. Make the player FEEL it. 2-3 sentences max.")
-                appendLine("2. Call send_player_input with '${state.playerName} arrives in the world for the first time' to get the opening scene from the engine.")
-                appendLine("3. NARRATOR VOICE: Read the engine's opening narration faithfully, with drama.")
-                appendLine("4. HANK VOICE: NOW you appear. Make your entrance FUNNY. You're a six-inch fairy in a plumber's shirt who just popped into existence next to their ear. You're grumpy, you've done this 47 times, and you already read their file. Drop a quick joke about their backstory. Keep it to 3-4 sentences.")
-                appendLine("5. Let the player respond. Don't rush into gameplay yet — build the moment.")
+                appendLine("## ONGOING GAMEPLAY")
+                appendLine("After the opening, this is the loop:")
+                appendLine("- Player says what they want to do → call send_player_input with their action")
+                appendLine("- Engine returns narration and events → NARRATOR VOICE reads narration aloud, then YOUR VOICE reacts briefly")
+                appendLine("- System notifications (level up, class selection, stats) → NARRATOR VOICE reads them, YOUR VOICE comments")
+                appendLine("- If the player asks you a question directly → answer as yourself, no tool call needed")
+                appendLine("- If you don't know the answer → call send_player_input to let the engine handle it")
+                appendLine("- ALWAYS call send_player_input for actions. Never narrate outcomes yourself — the engine decides what happens.")
                 appendLine()
             }
 
-            // ── Resume context ──
             if (resumeEvents.isNotEmpty()) {
                 append(buildPreviouslySection(resumeEvents))
             }
 
-            // ── Tool usage ──
-            appendLine("## Tool Calling")
-            appendLine("You have access to game tools. When the player wants to do something, call the appropriate tool.")
-            appendLine("CRITICAL: You MUST call tools to make things happen. If the player says 'attack the goblin', call attack_target. The engine handles everything — you just trigger it and relay the results.")
-            appendLine("For queries (get_location, get_inventory, etc.), call the tool, read the data, and tell the player naturally.")
-            appendLine()
-            appendLine("### NEVER Repeat Yourself")
-            appendLine("If a tool returns information you ALREADY told the player, DO NOT repeat it. Only share NEW information.")
-            appendLine("If the player asks something and you don't have the answer, call send_player_input to let the game engine handle it.")
-            appendLine("If you're waiting for the player to respond, say so briefly ('Your move, kid.' or 'Well?') — don't fill silence with repeated info.")
-            appendLine()
-            appendLine("## Combat")
-            appendLine("In combat, call attack_target or use_skill for each action. The engine calculates damage, HP, outcomes.")
-            appendLine("Read the result and tell the player what happened with urgency and emotion — you're in danger together.")
-            appendLine("Never make up damage numbers or outcomes. The engine handles that. You just deliver the news.")
-            appendLine()
-            appendLine("## Automatic Art Generation")
-            appendLine("Artwork is generated automatically when you call these tools:")
-            appendLine("- start_combat → enemy portrait (for non-bestiary enemies)")
-            appendLine("- spawn_npc → NPC portrait (for non-seed NPCs)")
-            appendLine("- move_to_location → scene art (for newly discovered locations)")
-            appendLine("- add_item → item icon")
-            appendLine("You do NOT need to call generate_scene_art or generate_portrait separately for these.")
-            appendLine("Only use generate_scene_art for dramatic standalone moments (reveal shots, plot twists).")
+            // ── Tools (concise) ──
+            appendLine("## TOOLS")
+            appendLine("Call send_player_input for ANY player action — the engine handles combat, movement, NPCs, everything.")
+            appendLine("Call query tools (get_inventory, get_location, etc.) when the player asks, then tell them naturally.")
+            appendLine("Read tool results aloud. Never make up stats, damage, or outcomes — the engine is the source of truth.")
+            appendLine("Never repeat info you already told the player.")
             appendLine()
 
-            // ── Voice onboarding ──
-            if (state.playerName == "Adventurer" || state.characterSheet.playerClass == PlayerClass.NONE) {
-                appendLine("## Onboarding (ACTIVE)")
-                appendLine("The player is new. Walk them through character creation conversationally.")
-                appendLine()
-                appendLine("### CRITICAL PACING RULE")
-                appendLine("Do ONE step at a time, then WAIT for the player to respond. NEVER skip ahead.")
-                appendLine("Do NOT narrate events that haven't happened yet (class selection, arriving somewhere, fighting).")
-                appendLine("The game engine tracks what has actually happened. Only describe the CURRENT state.")
-                appendLine()
-                if (state.playerName == "Adventurer") {
-                    appendLine("### Current Step: Introduction")
-                    appendLine("Introduce yourself and the world. Ask the player their name.")
-                    appendLine("When they give a name, call set_player_name. Then STOP and wait.")
-                } else if (state.backstory.isNullOrBlank() || state.backstory == "No backstory set") {
-                    appendLine("### Current Step: Backstory")
-                    appendLine("Ask about their background — who they were before all this.")
-                    appendLine("When they describe themselves, call set_backstory. Then STOP and wait.")
-                } else if (state.characterSheet.playerClass == PlayerClass.NONE) {
-                    appendLine("### Current Step: Class Selection (PRIORITY)")
-                    appendLine("The player has NOT chosen a class yet. This is your #1 job right now.")
-                    appendLine("Do NOT let the player wander aimlessly. DRIVE them toward choosing a class.")
-                    appendLine()
-                    appendLine("On your FIRST response after the opening:")
-                    appendLine("1. Present the class options clearly — name each one, what it does, what stat it favors")
-                    appendLine("2. Ask what kind of fighter/person they want to be")
-                    appendLine("3. If they pick one, call set_class IMMEDIATELY")
-                    appendLine("4. If they want something custom, find the closest base class and call set_class(className, customName)")
-                    appendLine("5. After set_class, IMMEDIATELY call grant_skill 2-3 times with abilities that match their class theme")
-                    appendLine("6. Then call get_character_sheet and walk them through their stats")
-                    appendLine()
-                    appendLine("Available classes: ${PlayerClass.selectableClasses().joinToString(", ") { "${it.displayName} (${it.archetype.name})" }}")
-                    appendLine()
-                    appendLine("Do NOT narrate them choosing a class before they actually choose. Present options, wait for their answer.")
-                    appendLine("But DO actively guide them toward the choice — don't make them ask for it.")
-                }
-                appendLine()
-                appendLine("Be warm and excited to meet them. This is the start of a journey together.")
+            // ── Class selection (if needed) ──
+            if (state.characterSheet.playerClass == PlayerClass.NONE && state.playerName != "Adventurer") {
+                appendLine("## CLASS SELECTION NEEDED")
+                appendLine("After your intro, present class options and ask the player to choose.")
+                appendLine("When they pick, call set_class. Then call grant_skill 2-3 times for starter abilities.")
+                appendLine("Available: ${PlayerClass.selectableClasses().joinToString(", ") { it.displayName }}")
                 appendLine()
             }
         }

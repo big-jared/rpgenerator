@@ -103,24 +103,8 @@ object ReceptionistWebSocketHandler {
             )
             .build(),
         FunctionDeclaration.builder()
-            .name("set_appearance")
-            .description("Set the player's physical appearance for their portrait. Call after they describe what they look like.")
-            .parameters(
-                Schema.builder()
-                    .type(Type.Known.OBJECT)
-                    .properties(mapOf(
-                        "description" to Schema.builder()
-                            .type(Type.Known.STRING)
-                            .description("A short visual description of the player's appearance, e.g. 'mid-30s man, short brown hair, muscular build, beard'")
-                            .build()
-                    ))
-                    .required(listOf("description"))
-                    .build()
-            )
-            .build(),
-        FunctionDeclaration.builder()
             .name("finish_onboarding")
-            .description("Complete the onboarding process. Call this once the player has a name, backstory, appearance, and world selected.")
+            .description("Complete the onboarding process. Call this once the player has a name, backstory, and world selected.")
             // No .parameters() — SDK docs: "For function with no parameters, this can be left unset."
             .build()
     )
@@ -452,11 +436,14 @@ object ReceptionistWebSocketHandler {
                 val story = session.backstory ?: ""
                 println("ReceptionistWSHandler: Auto-completing onboarding after turn ${session.turnCount} (name=$name, seed=$seed)")
                 session.onboardingDone = true
+                val appearance = session.appearance
+                    ?: session.userSpeechPerTurn.joinToString(". ").take(500)
                 val completeMsg = buildJsonObject {
                     put("type", JsonPrimitive("onboarding_complete"))
                     put("seedId", JsonPrimitive(seed))
                     put("playerName", JsonPrimitive(name))
                     put("backstory", JsonPrimitive(story))
+                    put("portraitDescription", JsonPrimitive(appearance))
                 }
                 ws.send(json.encodeToString(JsonObject.serializer(), completeMsg))
             }
@@ -499,14 +486,6 @@ object ReceptionistWebSocketHandler {
                         put("data", JsonPrimitive("Backstory recorded."))
                     }
                 }
-                "set_appearance" -> {
-                    session.appearance = args["description"]?.toString()
-                    println("ReceptionistWSHandler: Appearance: ${session.appearance}")
-                    buildJsonObject {
-                        put("success", JsonPrimitive(true))
-                        put("data", JsonPrimitive("Appearance recorded."))
-                    }
-                }
                 "select_world" -> {
                     session.modelCalledSelectWorld = true
                     session.seedId = args["seed_id"]?.toString()
@@ -522,7 +501,10 @@ object ReceptionistWebSocketHandler {
                         put("seedId", JsonPrimitive(session.seedId ?: ""))
                         put("playerName", JsonPrimitive(session.playerName ?: ""))
                         put("backstory", JsonPrimitive(session.backstory ?: ""))
-                        put("portraitDescription", JsonPrimitive(session.appearance ?: ""))
+                        // Use explicit appearance if set, otherwise use all user speech as context
+                        val appearance = session.appearance
+                            ?: session.userSpeechPerTurn.joinToString(". ").take(500)
+                        put("portraitDescription", JsonPrimitive(appearance))
                     }
                     ws.send(json.encodeToString(JsonObject.serializer(), completeMsg))
 

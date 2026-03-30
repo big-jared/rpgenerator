@@ -601,12 +601,16 @@ object McpHandler {
                 // Trigger opening narration by sending blank input
                 // GameOrchestrator.processInput("") plays the intro and returns
                 val introEvents = mutableListOf<JsonObject>()
+                var introSceneImage: ByteArray? = null
                 log.info("start_game: triggering opening narration via processInput(\"\")...")
                 val introStart = System.currentTimeMillis()
                 try {
                     session.game.processInput("").collect { event ->
                         introEvents.add(gameEventToJson(event))
                         log.debug("start_game: intro event: {}", event::class.simpleName)
+                        if (event is GameEvent.SceneImage && event.imageData.isNotEmpty() && introSceneImage == null) {
+                            introSceneImage = event.imageData
+                        }
                     }
                     val introElapsed = System.currentTimeMillis() - introStart
                     log.info("start_game: intro narration complete in {}ms, {} events", introElapsed, introEvents.size)
@@ -631,6 +635,10 @@ object McpHandler {
                     }
                     putJsonArray("introEvents") { introEvents.forEach { add(it) } }
                     put("message", JsonPrimitive("Game started! Use send_player_input to play."))
+                    if (introSceneImage != null) {
+                        put("imageBase64", JsonPrimitive(java.util.Base64.getEncoder().encodeToString(introSceneImage)))
+                        put("mimeType", JsonPrimitive("image/png"))
+                    }
                 }
             }
 
@@ -922,18 +930,29 @@ object McpHandler {
                 log.info("send_player_input: '{}' (len={})", input.take(100), input.length)
                 val inputStart = System.currentTimeMillis()
                 val events = mutableListOf<JsonObject>()
+                var firstSceneImage: ByteArray? = null
                 session.game.processInput(input).collect { event ->
                     val eventElapsed = System.currentTimeMillis() - inputStart
                     log.debug("send_player_input: event {} at +{}ms", event::class.simpleName, eventElapsed)
                     events.add(gameEventToJson(event))
+                    // Capture first scene image for MCP image content block
+                    if (event is GameEvent.SceneImage && event.imageData.isNotEmpty() && firstSceneImage == null) {
+                        firstSceneImage = event.imageData
+                    }
                 }
                 val inputElapsed = System.currentTimeMillis() - inputStart
-                log.info("send_player_input: completed in {}ms, {} events", inputElapsed, events.size)
+                log.info("send_player_input: completed in {}ms, {} events, hasImage={}", inputElapsed, events.size, firstSceneImage != null)
                 // Auto-save after each input
                 try { session.game.save() } catch (_: Exception) {}
+
+                // Return result — imageBase64/mimeType keys trigger image content block in handleToolsCall
                 return buildJsonObject {
                     put("success", JsonPrimitive(true))
                     putJsonArray("events") { events.forEach { add(it) } }
+                    if (firstSceneImage != null) {
+                        put("imageBase64", JsonPrimitive(java.util.Base64.getEncoder().encodeToString(firstSceneImage)))
+                        put("mimeType", JsonPrimitive("image/png"))
+                    }
                 }
             }
         }

@@ -14,7 +14,10 @@ import io.ktor.websocket.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import com.rpgenerator.core.api.CharacterCreationOptions
+import com.rpgenerator.core.api.GameEvent
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -352,6 +355,23 @@ fun main() {
                 val body = call.receive<ToolExecutionRequest>()
                 val argsMap: Map<String, Any?> = body.args
 
+                // Handle send_player_input — routes through processInput, not executeTool
+                if (body.name == "send_player_input") {
+                    val input = (body.args["input"] ?: "").toString()
+                    val events = session.game.processInput(input).toList()
+                    val jsonSerializer = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+                    val eventJsons = events.map { event ->
+                        jsonSerializer.encodeToJsonElement(GameEvent.serializer(), event).jsonObject
+                    }
+                    call.respond(ToolExecutionResponse(
+                        success = true,
+                        data = JsonObject(emptyMap()),
+                        events = eventJsons,
+                        error = null
+                    ))
+                    return@post
+                }
+
                 // Handle image-only tools that don't exist in the core tool contract
                 var imageBase64: String? = null
                 var imageMimeType: String? = null
@@ -495,6 +515,19 @@ fun main() {
                 val icon = session.itemIcons[itemId]
                     ?: return@get call.respond(HttpStatusCode.NotFound)
                 call.respondBytes(icon.first, ContentType.parse(icon.second))
+            }
+
+            // Serve cached scene/portrait images
+            get("/api/game/{sessionId}/image/{imageId}") {
+                val sessionId = call.parameters["sessionId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val imageId = call.parameters["imageId"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest)
+                val session = GameSessionManager.getSession(sessionId)
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val img = session.images[imageId]
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                call.respondBytes(img.first, ContentType.parse(img.second))
             }
 
             // List all saved games (scan DB files)
